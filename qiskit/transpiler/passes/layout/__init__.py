@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add fixed_point_sabre
 
 """Module containing transpiler layout passes."""
 
@@ -16,6 +18,7 @@ from .set_layout import SetLayout
 from .trivial_layout import TrivialLayout
 from .dense_layout import DenseLayout
 from .sabre_layout import SabreLayout
+from .fixed_point_sabre_layout import FixedPointSabreLayout
 from .csp_layout import CSPLayout
 from .vf2_layout import VF2Layout
 from .vf2_post_layout import VF2PostLayout
@@ -24,3 +27,4 @@ from .layout_2q_distance import Layout2qDistance
 from .enlarge_with_ancilla import EnlargeWithAncilla
 from .full_ancilla_allocation import FullAncillaAllocation
 from .sabre_pre_layout import SabrePreLayout
+from .fixed_point_sabre_pre_layout import FixedPointSabrePreLayout

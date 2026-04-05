@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add FixedPointSabre
 
 """Built-in transpiler stage plugins for preset pass managers."""
 
@@ -22,10 +24,12 @@ from qiskit.transpiler.passes import ApplyLayout
 from qiskit.transpiler.passes import BasicSwap
 from qiskit.transpiler.passes import LookaheadSwap
 from qiskit.transpiler.passes import SabreSwap
+from qiskit.transpiler.passes import FixedPointSabreSwap
 from qiskit.transpiler.passes import Error
 from qiskit.transpiler.passes import SetLayout
 from qiskit.transpiler.passes import VF2Layout
 from qiskit.transpiler.passes import SabreLayout
+from qiskit.transpiler.passes import FixedPointSabreLayout
 from qiskit.transpiler.passes import DenseLayout
 from qiskit.transpiler.passes import TrivialLayout
 from qiskit.transpiler.passes import CheckMap
@@ -430,6 +434,92 @@ class SabreSwapPassManager(PassManagerStagePlugin):
         if optimization_level == 3:
             trial_count = _get_trial_count(20)
             routing_pass = SabreSwap(
+                coupling_map_routing,
+                heuristic="decay",
+                seed=seed_transpiler,
+                trials=trial_count,
+            )
+            return common.generate_routing_passmanager(
+                routing_pass,
+                target,
+                coupling_map=coupling_map,
+                vf2_call_limit=vf2_call_limit,
+                vf2_max_trials=vf2_max_trials,
+                seed_transpiler=-1,
+                use_barrier_before_measurement=True,
+            )
+        raise TranspilerError(f"Invalid optimization level specified: {optimization_level}")
+
+
+class FixedPointSabreSwapPassManager(PassManagerStagePlugin):
+    """Plugin class for routing stage with :class:`~.FixedPointSabreSwap`"""
+
+    def pass_manager(self, pass_manager_config, optimization_level=None) -> PassManager:
+        """Build routing stage PassManager."""
+        seed_transpiler = pass_manager_config.seed_transpiler
+        target = pass_manager_config.target
+        coupling_map = pass_manager_config.coupling_map
+        coupling_map_routing = target
+        if coupling_map_routing is None:
+            coupling_map_routing = coupling_map
+        vf2_call_limit, vf2_max_trials = common.get_vf2_limits(
+            optimization_level,
+            pass_manager_config.layout_method,
+            pass_manager_config.initial_layout,
+        )
+        if optimization_level == 0:
+            trial_count = _get_trial_count(5)
+            routing_pass = FixedPointSabreSwap(
+                coupling_map_routing,
+                heuristic="basic",
+                seed=seed_transpiler,
+                trials=trial_count,
+            )
+            return common.generate_routing_passmanager(
+                routing_pass,
+                target,
+                coupling_map=coupling_map,
+                seed_transpiler=-1,
+                use_barrier_before_measurement=True,
+            )
+        if optimization_level == 1:
+            trial_count = _get_trial_count(5)
+            routing_pass = FixedPointSabreSwap(
+                coupling_map_routing,
+                heuristic="decay",
+                seed=seed_transpiler,
+                trials=trial_count,
+            )
+            return common.generate_routing_passmanager(
+                routing_pass,
+                target,
+                coupling_map,
+                vf2_call_limit=vf2_call_limit,
+                vf2_max_trials=vf2_max_trials,
+                seed_transpiler=-1,
+                check_trivial=True,
+                use_barrier_before_measurement=True,
+            )
+        if optimization_level == 2:
+            trial_count = _get_trial_count(20)
+            routing_pass = FixedPointSabreSwap(
+                coupling_map_routing,
+                heuristic="decay",
+                seed=seed_transpiler,
+                trials=trial_count,
+            )
+            return common.generate_routing_passmanager(
+                routing_pass,
+                target,
+                coupling_map=coupling_map,
+                vf2_call_limit=vf2_call_limit,
+                vf2_max_trials=vf2_max_trials,
+                seed_transpiler=-1,
+                use_barrier_before_measurement=True,
+            )
+        if optimization_level == 3:
+            trial_count = _get_trial_count(20)
+            routing_pass = FixedPointSabreSwap(
                 coupling_map_routing,
                 heuristic="decay",
                 seed=seed_transpiler,
@@ -970,6 +1060,94 @@ class SabreLayoutPassManager(PassManagerStagePlugin):
                 swap_trials=trial_count,
                 layout_trials=trial_count,
                 skip_routing=pass_manager_config.routing_method not in (None, "default", "sabre"),
+            )
+        else:
+            raise TranspilerError(f"Invalid optimization level: {optimization_level}")
+        if layout_pass is not None:
+            layout.append(
+                ConditionalController(
+                    [
+                        BarrierBeforeFinalMeasurements(
+                            "qiskit.transpiler.internal.routing.protection.barrier"
+                        ),
+                        layout_pass,
+                    ],
+                    condition=_choose_layout_condition,
+                )
+            )
+        embed = common.generate_embed_passmanager(coupling_map)
+        layout.append(ConditionalController(embed.to_flow_controller(), condition=_swap_mapped))
+        return layout
+
+
+class FixedPointSabreLayoutPassManager(PassManagerStagePlugin):
+    """Plugin class for fixed-point sabre layout stage."""
+
+    def pass_manager(self, pass_manager_config, optimization_level=None) -> PassManager:
+        _given_layout = SetLayout(pass_manager_config.initial_layout)
+
+        def _choose_layout_condition(property_set):
+            return not property_set["layout"]
+
+        def _swap_mapped(property_set):
+            return property_set["final_layout"] is None
+
+        if pass_manager_config.target is None:
+            coupling_map = pass_manager_config.coupling_map
+        else:
+            coupling_map = pass_manager_config.target
+
+        layout = PassManager()
+        layout.append(_given_layout)
+        if coupling_map is None:
+            layout_pass = None
+        elif optimization_level == 0:
+            trial_count = _get_trial_count(5)
+
+            layout_pass = FixedPointSabreLayout(
+                coupling_map,
+                max_iterations=1,
+                seed=pass_manager_config.seed_transpiler,
+                swap_trials=trial_count,
+                layout_trials=trial_count,
+                skip_routing=pass_manager_config.routing_method
+                not in (None, "default", "fixed_point_sabre"),
+            )
+        elif optimization_level == 1:
+            trial_count = _get_trial_count(5)
+
+            layout_pass = FixedPointSabreLayout(
+                coupling_map,
+                max_iterations=2,
+                seed=pass_manager_config.seed_transpiler,
+                swap_trials=trial_count,
+                layout_trials=trial_count,
+                skip_routing=pass_manager_config.routing_method
+                not in (None, "default", "fixed_point_sabre"),
+            )
+        elif optimization_level == 2:
+            trial_count = _get_trial_count(20)
+
+            layout_pass = FixedPointSabreLayout(
+                coupling_map,
+                max_iterations=2,
+                seed=pass_manager_config.seed_transpiler,
+                swap_trials=trial_count,
+                layout_trials=trial_count,
+                skip_routing=pass_manager_config.routing_method
+                not in (None, "default", "fixed_point_sabre"),
+            )
+        elif optimization_level == 3:
+            trial_count = _get_trial_count(20)
+
+            layout_pass = FixedPointSabreLayout(
+                coupling_map,
+                max_iterations=4,
+                seed=pass_manager_config.seed_transpiler,
+                swap_trials=trial_count,
+                layout_trials=trial_count,
+                skip_routing=pass_manager_config.routing_method
+                not in (None, "default", "fixed_point_sabre"),
             )
         else:
             raise TranspilerError(f"Invalid optimization level: {optimization_level}")

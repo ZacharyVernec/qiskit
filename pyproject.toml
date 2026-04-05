@@ -158,6 +158,7 @@ basic = "qiskit.transpiler.preset_passmanagers.builtin_plugins:BasicSwapPassMana
 lookahead = "qiskit.transpiler.preset_passmanagers.builtin_plugins:LookaheadSwapPassManager"
 none = "qiskit.transpiler.preset_passmanagers.builtin_plugins:NoneRoutingPassManager"
 sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:SabreSwapPassManager"
+fixed_point_sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:FixedPointSabreSwapPassManager"
 
 [project.entry-points."qiskit.transpiler.optimization"]
 default = "qiskit.transpiler.preset_passmanagers.builtin_plugins:OptimizationPassManager"
@@ -166,6 +167,7 @@ default = "qiskit.transpiler.preset_passmanagers.builtin_plugins:OptimizationPas
 default = "qiskit.transpiler.preset_passmanagers.builtin_plugins:DefaultLayoutPassManager"
 dense = "qiskit.transpiler.preset_passmanagers.builtin_plugins:DenseLayoutPassManager"
 sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:SabreLayoutPassManager"
+fixed_point_sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:FixedPointSabreLayoutPassManager"
 trivial = "qiskit.transpiler.preset_passmanagers.builtin_plugins:TrivialLayoutPassManager"
 
 [project.entry-points."qiskit.transpiler.scheduling"]

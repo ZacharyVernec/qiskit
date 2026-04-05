@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add fixed_point_sabre
 
 """Module containing transpiler mapping passes."""
 
@@ -16,6 +18,7 @@ from .basic_swap import BasicSwap
 from .layout_transformation import LayoutTransformation
 from .lookahead_swap import LookaheadSwap
 from .sabre_swap import SabreSwap
+from .fixed_point_sabre_swap import FixedPointSabreSwap
 from .commuting_2q_gate_routing.commuting_2q_gate_router import Commuting2qGateRouter
 from .commuting_2q_gate_routing.swap_strategy import SwapStrategy
 from .star_prerouting import StarPreRouting

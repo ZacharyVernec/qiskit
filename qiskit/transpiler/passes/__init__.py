@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add FixedPointSabre
 
 """
 ===================================================
@@ -192,6 +194,7 @@ from .layout import SetLayout
 from .layout import TrivialLayout
 from .layout import DenseLayout
 from .layout import SabreLayout
+from .layout import FixedPointSabreLayout
 from .layout import CSPLayout
 from .layout import VF2Layout
 from .layout import VF2PostLayout
@@ -200,6 +203,7 @@ from .layout import Layout2qDistance
 from .layout import EnlargeWithAncilla
 from .layout import FullAncillaAllocation
 from .layout import SabrePreLayout
+from .layout import FixedPointSabrePreLayout
 
 # routing
 from .routing import BasicSwap
@@ -207,6 +211,7 @@ from .routing import Commuting2qGateRouter
 from .routing import LayoutTransformation
 from .routing import LookaheadSwap
 from .routing import SabreSwap
+from .routing import FixedPointSabreSwap
 from .routing import StarPreRouting
 
 # basis change

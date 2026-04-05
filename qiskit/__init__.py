@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add fixed-point-sabre
 
 # pylint: disable=wrong-import-position,wrong-import-order
 
@@ -90,6 +92,7 @@ sys.modules["qiskit._accelerate.remove_diagonal_gates_before_measure"] = (
 )
 sys.modules["qiskit._accelerate.results"] = _accelerate.results
 sys.modules["qiskit._accelerate.sabre"] = _accelerate.sabre
+sys.modules["qiskit._accelerate.fixed_point_sabre"] = _accelerate.fixed_point_sabre
 sys.modules["qiskit._accelerate.sampled_exp_val"] = _accelerate.sampled_exp_val
 sys.modules["qiskit._accelerate.sparse_observable"] = _accelerate.sparse_observable
 sys.modules["qiskit._accelerate.sparse_pauli_op"] = _accelerate.sparse_pauli_op

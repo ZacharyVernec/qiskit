@@ -10,6 +10,8 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+// Modified by Zachary Vernec to add fixed_point_sabre
+
 //! Module for transpiler pass implementations
 //!
 //! This module contains function definitions for transpiler passes
@@ -35,6 +37,7 @@ mod dense_layout;
 mod disjoint_layout;
 mod elide_permutations;
 mod filter_op_nodes;
+pub mod fixed_point_sabre;
 mod gate_direction;
 mod gates_in_basis;
 mod high_level_synthesis;
