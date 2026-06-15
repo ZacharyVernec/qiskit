@@ -9,6 +9,8 @@
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
+#
+# Modified by Zachary Vernec to add DistributedTarget
 
 """
 =====================================
@@ -1557,4 +1559,5 @@ from .preset_passmanagers import generate_preset_pass_manager
 from .target import Target
 from .target import InstructionProperties
 from .target import QubitProperties
+from .distributed_target import DistributedTarget
 from .optimization_metric import OptimizationMetric
