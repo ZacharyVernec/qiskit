@@ -67,6 +67,31 @@ class TestDistributedTarget(QiskitTestCase):
         self.assertIn("u", dt)
         self.assertIn("cx", dt)
 
+    def test_single_qpu_no_comm_ancillas_needed(self):
+        """A single QPU does not require communication ancillas."""
+        qpu_to_qubits = {"qpu_0": {0, 1, 2, 3}}
+        dt = DistributedTarget(self.target, qpu_to_qubits)
+        self.assertEqual(dt.qpus, ["qpu_0"])
+        self.assertEqual(dt.comm_ancillas, {})
+
+    def test_single_qpu_with_comm_ancillas_still_validated(self):
+        """If comm_ancillas are provided for a single QPU, they are validated."""
+        qpu_to_qubits = {"qpu_0": {0, 1, 2, 3}}
+        # Valid: ancilla belongs to qpu_0.
+        comm_ancillas = {"qpu_0": [0]}
+        dt = DistributedTarget(
+            self.target, qpu_to_qubits, comm_ancillas=comm_ancillas
+        )
+        self.assertEqual(dt.comm_ancillas, {"qpu_0": [0]})
+
+        # Invalid: ancilla does not belong to qpu_0.
+        comm_ancillas_bad = {"qpu_0": [4]}
+        with self.assertRaises(ValueError) as ctx:
+            DistributedTarget(
+                self.target, qpu_to_qubits, comm_ancillas=comm_ancillas_bad
+            )
+        self.assertIn("not in that QPU", str(ctx.exception))
+
     def test_empty_qpu_qubit_set_raises(self):
         """An empty QPU qubit set should raise ValueError."""
         qpu_to_qubits = {
@@ -86,11 +111,27 @@ class TestDistributedTarget(QiskitTestCase):
         self.assertIn("empty qubit set", str(ctx.exception))
 
     def test_missing_comm_ancillas_raises(self):
-        """Not providing comm_ancillas should raise ValueError."""
-        qpu_to_qubits = {"qpu_0": {0, 1, 2, 3}}
+        """Not providing comm_ancillas (None) with multiple QPUs should raise ValueError."""
+        qpu_to_qubits = {
+            "qpu_0": {0, 1, 2, 3},
+            "qpu_1": {4, 5, 6, 7},
+        }
         with self.assertRaises(ValueError) as ctx:
             DistributedTarget(self.target, qpu_to_qubits)
-        self.assertIn("comm_ancillas", str(ctx.exception))
+        self.assertIn("argument is required", str(ctx.exception))
+
+    def test_incomplete_comm_ancillas_raises(self):
+        """Providing comm_ancillas but missing a QPU should raise ValueError."""
+        qpu_to_qubits = {
+            "qpu_0": {0, 1, 2, 3},
+            "qpu_1": {4, 5, 6, 7},
+        }
+        comm_ancillas = {
+            "qpu_0": [3],
+        }
+        with self.assertRaises(ValueError) as ctx:
+            DistributedTarget(self.target, qpu_to_qubits, comm_ancillas)
+        self.assertIn("has no entry in 'comm_ancillas'", str(ctx.exception))
 
     def test_three_qpus(self):
         """Test construction with three QPUs."""

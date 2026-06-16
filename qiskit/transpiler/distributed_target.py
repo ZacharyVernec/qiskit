@@ -59,7 +59,8 @@ class DistributedTarget(Target):
     3. **Non-empty QPU sets** — Every QPU must have at least one qubit assigned.
     4. **Ancilla subset** — The communication ancillas declared for a QPU must be a
        subset of that QPU's qubits, and every QPU must have at least one
-       communication ancilla.
+       communication ancilla.  When there is only a single QPU, communication
+       ancillas are optional (no inter-QPU communication is needed).
     5. **Edge validity** — Every communication-ancilla edge must be present in the
        coupling map of the target.
 
@@ -93,7 +94,8 @@ class DistributedTarget(Target):
                 set of physical qubit indices belonging to that QPU.
             comm_ancillas: A mapping from QPU identifiers to the list of
                 physical qubit indices that are designated as communication ancillas
-                for that QPU.  Every QPU must have at least one communication ancilla.
+                for that QPU.  Required when there is more than one QPU; optional
+                (and unused) for a single QPU.
             comm_ancilla_edges: An optional list of ``(u, v)`` edges in the coupling
                 map that connect two communication ancillas.  Defaults to an empty
                 list.
@@ -141,34 +143,51 @@ class DistributedTarget(Target):
                 qubits_to_qpu[q] = qpu
 
         # 4. Ancilla subset and non-empty — ancillas must belong to their QPU's
-        # qubit set; every QPU must have at least one communication ancilla.
+        # qubit set; every QPU must have at least one communication ancilla
+        # unless there is only a single QPU (no inter-QPU communication needed).
+        n_qpus = len(all_qpu_qubits)
         if comm_ancillas is None:
-            raise ValueError(
-                "'comm_ancillas' must be provided; every QPU must have at least "
-                "one communication ancilla."
-            )
+            if n_qpus > 1:
+                raise ValueError(
+                    "'comm_ancillas' argument is required when there is more than "
+                    "one QPU."
+                )
+            comm_ancillas = {}
         for qpu in comm_ancillas:
             if qpu not in all_qpu_qubits:
-                raise ValueError(f"Communication ancillas specified for unknown QPU '{qpu}'.")
-        for qpu in all_qpu_qubits:
-            if qpu not in comm_ancillas:
                 raise ValueError(
-                    f"QPU '{qpu}' has no communication ancillas specified; "
-                    "every QPU must have at least one."
+                    f"Communication ancillas specified for unknown QPU '{qpu}'."
                 )
-            ancillas = comm_ancillas[qpu]
-            if not ancillas:
-                raise ValueError(
-                    f"QPU '{qpu}' has an empty communication ancilla list; "
-                    "every QPU must have at least one."
-                )
-            qpu_qubits = all_qpu_qubits[qpu]
-            for anc in ancillas:
-                if anc not in qpu_qubits:
+        if n_qpus > 1:
+            for qpu in all_qpu_qubits:
+                if qpu not in comm_ancillas:
                     raise ValueError(
-                        f"Communication ancilla {anc} for QPU '{qpu}' is not in "
-                        f"that QPU's qubit set {sorted(qpu_qubits)}."
+                        f"QPU '{qpu}' has no entry in 'comm_ancillas'; "
+                        "every QPU must have at least one communication ancilla."
                     )
+                ancillas = comm_ancillas[qpu]
+                if not ancillas:
+                    raise ValueError(
+                        f"QPU '{qpu}' has an empty communication ancilla list; "
+                        "every QPU must have at least one."
+                    )
+                qpu_qubits = all_qpu_qubits[qpu]
+                for anc in ancillas:
+                    if anc not in qpu_qubits:
+                        raise ValueError(
+                            f"Communication ancilla {anc} for QPU '{qpu}' is not in "
+                            f"that QPU's qubit set {sorted(qpu_qubits)}."
+                        )
+        else:
+            # Single QPU: if ancillas were provided, validate subset membership.
+            for qpu, ancillas in comm_ancillas.items():
+                qpu_qubits = all_qpu_qubits[qpu]
+                for anc in ancillas:
+                    if anc not in qpu_qubits:
+                        raise ValueError(
+                            f"Communication ancilla {anc} for QPU '{qpu}' is not in "
+                            f"that QPU's qubit set {sorted(qpu_qubits)}."
+                        )
 
         # 5. Edge validity — every comm-ancilla edge must exist in the coupling map.
         if comm_ancilla_edges is None:
@@ -230,7 +249,9 @@ class DistributedTarget(Target):
         self._qubits_to_qpu: Dict[int, str] = {
             q: qpu for qpu, qubits in qpu_to_qubits.items() for q in qubits
         }
-        self._comm_ancillas: Dict[str, List[int]] = dict(comm_ancillas)
+        self._comm_ancillas: Dict[str, List[int]] = (
+            dict(comm_ancillas) if comm_ancillas else {}
+        )
         self._comm_ancilla_edges: List[Tuple[int, int]] = (
             list(comm_ancilla_edges) if comm_ancilla_edges else []
         )
