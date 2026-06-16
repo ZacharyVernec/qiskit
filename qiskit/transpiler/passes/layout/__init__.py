@@ -28,3 +28,4 @@ from .enlarge_with_ancilla import EnlargeWithAncilla
 from .full_ancilla_allocation import FullAncillaAllocation
 from .sabre_pre_layout import SabrePreLayout
 from .fixed_point_sabre_pre_layout import FixedPointSabrePreLayout
+from .fixed_point_constraint_validation import FixedPointConstraintValidation

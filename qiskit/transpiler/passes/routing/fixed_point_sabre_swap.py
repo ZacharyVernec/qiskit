@@ -28,6 +28,7 @@ from qiskit.utils import default_num_processes
 
 from qiskit._accelerate.fixed_point_sabre import sabre_routing, Heuristic, SetScaling, RoutingTarget
 from qiskit._accelerate.nlayout import NLayout
+from qiskit.transpiler.distributed_target import DistributedTarget
 
 LOG = logging.getLogger(__name__)
 
@@ -174,6 +175,70 @@ class FixedPointSabreSwap(TransformationPass):
             else CouplingMap(self._routing_target.coupling_list())
         )
 
+    def _build_fixed_point_constraints(self, dag):
+        """Extract fixed-point SABRE constraints from DistributedTarget + property set.
+
+        At swap time the DAG is already physical, so the logical qubit indices
+        in ``fixed_point_logical_partitions`` are remapped to their current
+        physical positions via the ``layout`` property set entry.
+
+        Returns the five constraint lists expected by the Rust
+        ``sabre_routing`` function, or empty lists for compatibility mode.
+        """
+        target = getattr(self, "target", None)
+        if not isinstance(target, DistributedTarget):
+            return [], [], [], [], []
+
+        dt = target
+        logical_partitions_raw = self.property_set.get("fixed_point_logical_partitions", {})
+        anchors_raw = self.property_set.get("fixed_point_anchors", {})
+
+        # Read the current layout to remap logical → physical.
+        current_layout = self.property_set.get("layout")
+        dag_qubits = dag.qubits
+
+        logical_partitions = []
+        physical_partitions = []
+        anchors = []
+        comm_ancillas_vec = []
+        comm_ancilla_edges_vec = []
+
+        for qpu in dt.qpus:
+            r_qubits = logical_partitions_raw.get(qpu, [])
+            # Q_i = full QPU qubit set (including communication ancillas).
+            q_qubits = sorted(dt.qpu_to_qubits[qpu])
+            anchor_map = anchors_raw.get(qpu, {})
+
+            # Remap logical qubits in R_i to their current physical positions.
+            if current_layout is not None:
+                logical_physical = [current_layout.get_physical(q) for q in r_qubits]
+            else:
+                logical_physical = [dag_qubits.index(q) for q in r_qubits]
+
+            # Remap anchors: logical Qubit → physical index.
+            if current_layout is not None:
+                remapped_anchors = [
+                    (current_layout.get_physical(q), p) for q, p in anchor_map.items()
+                ]
+            else:
+                remapped_anchors = [(dag_qubits.index(q), p) for q, p in anchor_map.items()]
+
+            logical_partitions.append(logical_physical)
+            physical_partitions.append(q_qubits)
+            anchors.append(remapped_anchors)
+            comm_ancillas_vec.append(sorted(dt.comm_ancillas.get(qpu, [])))
+
+        comm_ancilla_edges_list = list(dt.comm_ancilla_edges) if dt.comm_ancilla_edges else []
+        comm_ancilla_edges_vec = [comm_ancilla_edges_list for _ in dt.qpus]
+
+        return (
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+        )
+
     def run(self, dag):
         """Run the SabreSwap pass on `dag`.
 
@@ -233,9 +298,29 @@ class FixedPointSabreSwap(TransformationPass):
         disjoint_utils.require_layout_isolated_to_component(dag, self.target)
 
         initial_layout = NLayout.generate_trivial_layout(num_dag_qubits)
+
+        # Gather fixed-point SABRE constraints (if applicable).
+        (
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+        ) = self._build_fixed_point_constraints(dag)
+
         sabre_start = time.perf_counter()
         dag, final_layout = sabre_routing(
-            dag, self._routing_target, heuristic, initial_layout, self.trials, self.seed
+            dag,
+            self._routing_target,
+            heuristic,
+            initial_layout,
+            self.trials,
+            self.seed,
+            logical_partitions=logical_partitions,
+            physical_partitions=physical_partitions,
+            anchors=anchors,
+            comm_ancillas_vec=comm_ancillas_vec,
+            comm_ancilla_edges_vec=comm_ancilla_edges_vec,
         )
         sabre_stop = time.perf_counter()
         LOG.debug("Sabre swap algorithm execution complete in: %s", sabre_stop - sabre_start)

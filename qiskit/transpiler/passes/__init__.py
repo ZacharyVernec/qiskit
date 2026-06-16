@@ -204,6 +204,7 @@ from .layout import EnlargeWithAncilla
 from .layout import FullAncillaAllocation
 from .layout import SabrePreLayout
 from .layout import FixedPointSabrePreLayout
+from .layout import FixedPointConstraintValidation
 
 # routing
 from .routing import BasicSwap

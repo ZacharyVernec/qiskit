@@ -32,6 +32,7 @@ from qiskit.transpiler.basepasses import TransformationPass
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.target import Target, _FakeTarget
 from qiskit._accelerate.fixed_point_sabre import sabre_layout_and_routing, Heuristic, SetScaling
+from qiskit.transpiler.distributed_target import DistributedTarget
 from qiskit.utils import default_num_processes
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,52 @@ class FixedPointSabreLayout(TransformationPass):
                 self._coupling_map.make_symmetric()
         return self._coupling_map
 
+    def _build_fixed_point_constraints(self, dag):
+        """Extract fixed-point SABRE constraints from DistributedTarget + property set.
+
+        Returns the five constraint lists expected by the Rust
+        ``sabre_layout_and_routing`` function, or empty lists for
+        SABRE compatibility mode (no ``DistributedTarget``).
+        """
+        target = getattr(self, "target", None)
+        if not isinstance(target, DistributedTarget):
+            return [], [], [], [], []
+
+        dt = target
+        logical_partitions_raw = self.property_set.get("fixed_point_logical_partitions", {})
+        anchors_raw = self.property_set.get("fixed_point_anchors", {})
+
+        dag_index = {qubit: i for i, qubit in enumerate(dag.qubits)}
+
+        logical_partitions = []
+        physical_partitions = []
+        anchors = []
+        comm_ancillas_vec = []
+        comm_ancilla_edges_vec = []
+
+        for qpu in dt.qpus:
+            r_qubits = logical_partitions_raw.get(qpu, [])
+            # Q_i = full QPU qubit set (including communication ancillas).
+            q_qubits = sorted(dt.qpu_to_qubits[qpu])
+            anchor_map = anchors_raw.get(qpu, {})
+
+            logical_partitions.append([dag_index[q] for q in r_qubits])
+            physical_partitions.append(q_qubits)
+            anchors.append([(dag_index[q], p) for q, p in anchor_map.items()])
+            comm_ancillas_vec.append(sorted(dt.comm_ancillas.get(qpu, [])))
+
+        # Duplicate comm_ancilla_edges across all groups (they are global).
+        comm_ancilla_edges_list = list(dt.comm_ancilla_edges) if dt.comm_ancilla_edges else []
+        comm_ancilla_edges_vec = [comm_ancilla_edges_list for _ in dt.qpus]
+
+        return (
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+        )
+
     def run(self, dag):
         """Run the SabreLayout pass on `dag`.
 
@@ -273,6 +320,15 @@ class FixedPointSabreLayout(TransformationPass):
             .with_lookahead(0.5, 20, SetScaling.Size)
             .with_decay(0.001, 5)
         )
+        # Gather fixed-point SABRE constraints (if applicable).
+        (
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+        ) = self._build_fixed_point_constraints(dag)
+
         sabre_start = time.perf_counter()
         # If `skip_routing`, then `out_dag` and `final` are meaningless but well-typed.
         out_dag, initial, final = sabre_layout_and_routing(
@@ -285,6 +341,11 @@ class FixedPointSabreLayout(TransformationPass):
             seed=self.seed,
             partial_layouts=starting_layouts,
             skip_routing=self.skip_routing,
+            logical_partitions=logical_partitions,
+            physical_partitions=physical_partitions,
+            anchors=anchors,
+            comm_ancillas_vec=comm_ancillas_vec,
+            comm_ancilla_edges_vec=comm_ancilla_edges_vec,
         )
         sabre_stop = time.perf_counter()
         logger.debug(

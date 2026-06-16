@@ -36,11 +36,13 @@ use crate::target::{Target, TargetCouplingError};
 
 use super::dag::SabreDAG;
 use super::heuristic::Heuristic;
-use super::route::{RoutingProblem, RoutingResult, RoutingTarget, swap_map, swap_map_trial};
+use super::route::{
+    FixedPointConstraints, RoutingProblem, RoutingResult, RoutingTarget, swap_map, swap_map_trial,
+};
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (dag, target, heuristic, max_iterations, num_swap_trials, num_random_trials, seed=None, partial_layouts=vec![], skip_routing=false))]
+#[pyo3(signature = (dag, target, heuristic, max_iterations, num_swap_trials, num_random_trials, seed=None, partial_layouts=vec![], skip_routing=false, logical_partitions=vec![], physical_partitions=vec![], anchors=vec![], comm_ancillas_vec=vec![], comm_ancilla_edges_vec=vec![]))]
 pub fn sabre_layout_and_routing(
     dag: &mut DAGCircuit,
     target: &Target,
@@ -51,6 +53,11 @@ pub fn sabre_layout_and_routing(
     seed: Option<u64>,
     partial_layouts: Vec<Vec<Option<PhysicalQubit>>>,
     skip_routing: bool,
+    logical_partitions: Vec<Vec<u32>>,
+    physical_partitions: Vec<Vec<u32>>,
+    anchors: Vec<Vec<(u32, u32)>>,
+    comm_ancillas_vec: Vec<Vec<u32>>,
+    comm_ancilla_edges_vec: Vec<Vec<[u32; 2]>>,
 ) -> PyResult<(DAGCircuit, NLayout, NLayout)> {
     let Some(num_physical_qubits) = target.num_qubits else {
         return Err(TranspilerError::new_err(
@@ -58,6 +65,23 @@ pub fn sabre_layout_and_routing(
         ));
     };
     let num_physical_qubits = num_physical_qubits as usize;
+
+    // Build fixed-point constraints if provided.
+    let constraints = if logical_partitions.is_empty() {
+        None
+    } else {
+        let num_logical = dag.num_qubits();
+        Some(FixedPointConstraints::new(
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+            num_logical,
+            num_physical_qubits,
+        )?)
+    };
+    let constraints_ref = constraints.as_ref();
     if partial_layouts
         .iter()
         .flatten()
@@ -145,6 +169,7 @@ pub fn sabre_layout_and_routing(
                 sabre: &sabre_full,
                 dag,
                 heuristic,
+                constraints: constraints_ref,
             };
             starting_layouts.extend(partial_layouts);
             add_heuristic_layouts(&mut starting_layouts, problem, allow_parallel);
@@ -215,6 +240,7 @@ pub fn sabre_layout_and_routing(
                     sabre: &sabre,
                     dag: &component.sub_dag,
                     heuristic,
+                    constraints: constraints_ref,
                 };
                 for (sub, full) in component.physical_qubits.iter().enumerate() {
                     sub_from_full[full.index()] = PhysicalQubit::new(sub as u32);
@@ -312,6 +338,7 @@ pub fn sabre_layout_and_routing(
                 sabre: &sabre_full,
                 dag,
                 heuristic,
+                constraints: constraints_ref,
             };
             let initial_layout =
                 NLayout::from_physical_to_virtual(initial_physical).expect("all indices are valid");

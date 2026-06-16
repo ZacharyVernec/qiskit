@@ -149,9 +149,7 @@ class DistributedTarget(Target):
             )
         for qpu in comm_ancillas:
             if qpu not in all_qpu_qubits:
-                raise ValueError(
-                    f"Communication ancillas specified for unknown QPU '{qpu}'."
-                )
+                raise ValueError(f"Communication ancillas specified for unknown QPU '{qpu}'.")
         for qpu in all_qpu_qubits:
             if qpu not in comm_ancillas:
                 raise ValueError(
@@ -272,3 +270,6 @@ class DistributedTarget(Target):
             f"qpus={len(self._qpu_to_qubits)}, "
             f"description={self.description!r})"
         )
+
+
+

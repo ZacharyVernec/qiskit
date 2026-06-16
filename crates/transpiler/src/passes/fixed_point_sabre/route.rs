@@ -300,7 +300,10 @@ impl RoutingTarget {
 /// Contains `None` when the target had all-to-all connectivity (in which case the two property
 /// methods [coupling_list] and [distance_matrix] also return `None`).
 #[pyclass]
-#[pyo3(name = "RoutingTarget", module = "qiskit._accelerate.fixed_point_sabre")]
+#[pyo3(
+    name = "RoutingTarget",
+    module = "qiskit._accelerate.fixed_point_sabre"
+)]
 pub struct PyRoutingTarget(pub Option<RoutingTarget>);
 #[pymethods]
 impl PyRoutingTarget {
@@ -369,6 +372,192 @@ impl PyRoutingTarget {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fixed-point SABRE constraint types
+// ---------------------------------------------------------------------------
+
+/// One constraint group: a pair (R_i, Q_i) with optional anchors.
+#[derive(Clone, Debug)]
+pub struct ConstraintGroup {
+    /// Logical (DAG) qubit indices in R_i.
+    pub logical_qubits: Vec<u32>,
+    /// Physical qubit indices in Q_i (full set, including comm ancillas).
+    pub physical_qubits: Vec<u32>,
+    /// Anchor pairs (logical_idx, physical_idx).
+    pub anchors: Vec<(u32, u32)>,
+    /// Communication ancilla physical indices for this group.
+    pub comm_ancillas: Vec<u32>,
+}
+
+/// Validated fixed-point SABRE constraints with O(1) lookup tables.
+///
+/// When this is `None` or empty, the algorithm runs in SABRE compatibility
+/// mode (no constraints enforced).
+#[derive(Clone, Debug)]
+pub struct FixedPointConstraints {
+    pub groups: Vec<ConstraintGroup>,
+    /// For each DAG qubit index: which group it belongs to, or `None`.
+    pub logical_to_group: Vec<Option<usize>>,
+    /// For each physical qubit index: which group it belongs to, or `None`.
+    pub physical_to_group: Vec<Option<usize>>,
+    /// For each DAG qubit index: the physical qubit it is anchored to, or `None`.
+    pub anchor_target: Vec<Option<u32>>,
+    /// Per-group communication ancilla lists.
+    pub comm_ancillas: Vec<Vec<u32>>,
+    /// Communication ancilla edges (across all groups).
+    pub comm_ancilla_edges: Vec<[u32; 2]>,
+}
+
+impl FixedPointConstraints {
+    /// Build constraints from raw per-group data, validating preconditions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PyValueError`] if any precondition is violated:
+    /// * Overlapping logical or physical qubits across groups.
+    /// * Out-of-range indices.
+    /// * Anchor qubit not in its declared R_i or Q_i.
+    /// * |R_i| > |Q_i|.
+    pub fn new(
+        logical_partitions: Vec<Vec<u32>>,
+        physical_partitions: Vec<Vec<u32>>,
+        anchors: Vec<Vec<(u32, u32)>>,
+        comm_ancillas: Vec<Vec<u32>>,
+        comm_ancilla_edges: Vec<Vec<[u32; 2]>>,
+        num_logical: usize,
+        num_physical: usize,
+    ) -> PyResult<Self> {
+        let num_groups = logical_partitions.len();
+        if num_groups == 0 {
+            return Ok(Self {
+                groups: Vec::new(),
+                logical_to_group: vec![None; num_logical],
+                physical_to_group: vec![None; num_physical],
+                anchor_target: vec![None; num_logical],
+                comm_ancillas: Vec::new(),
+                comm_ancilla_edges: Vec::new(),
+            });
+        }
+
+        // Validate parameter lengths match.
+        if physical_partitions.len() != num_groups
+            || anchors.len() != num_groups
+            || comm_ancillas.len() != num_groups
+        {
+            return Err(PyValueError::new_err(
+                "logical_partitions, physical_partitions, anchors, and comm_ancillas \
+                 must all have the same number of groups",
+            ));
+        }
+
+        let mut logical_to_group = vec![None; num_logical];
+        let mut physical_to_group = vec![None; num_physical];
+        let mut anchor_target = vec![None; num_logical];
+        let mut groups = Vec::with_capacity(num_groups);
+
+        // Flatten all comm_ancilla_edges into one list.
+        let comm_ancilla_edges: Vec<[u32; 2]> = comm_ancilla_edges.into_iter().flatten().collect();
+
+        for i in 0..num_groups {
+            let logical = logical_partitions.get(i).cloned().unwrap_or_default();
+            let physical = physical_partitions.get(i).cloned().unwrap_or_default();
+            let anchor_list = anchors.get(i).cloned().unwrap_or_default();
+            let comm = comm_ancillas.get(i).cloned().unwrap_or_default(); // clone for loop use
+            // Check |R_i| <= |Q_i|.
+            if logical.len() > physical.len() {
+                return Err(PyValueError::new_err(format!(
+                    "|R_{}| = {} > |Q_{}| = {}",
+                    i,
+                    logical.len(),
+                    i,
+                    physical.len(),
+                )));
+            }
+
+            // Register logical qubits and check disjointness.
+            for &l in &logical {
+                let l = l as usize;
+                if l >= num_logical {
+                    return Err(PyValueError::new_err(format!(
+                        "logical qubit index {} in group {} is out of range [0, {})",
+                        l, i, num_logical,
+                    )));
+                }
+                if logical_to_group[l].is_some() {
+                    return Err(PyValueError::new_err(format!(
+                        "logical qubit {} is assigned to more than one group",
+                        l,
+                    )));
+                }
+                logical_to_group[l] = Some(i);
+            }
+
+            // Register physical qubits and check disjointness & range.
+            for &p in &physical {
+                let p = p as usize;
+                if p >= num_physical {
+                    return Err(PyValueError::new_err(format!(
+                        "physical qubit index {} in group {} is out of range [0, {})",
+                        p, i, num_physical,
+                    )));
+                }
+                if physical_to_group[p].is_some() {
+                    return Err(PyValueError::new_err(format!(
+                        "physical qubit {} is assigned to more than one group",
+                        p,
+                    )));
+                }
+                physical_to_group[p] = Some(i);
+            }
+
+            // Register anchors and check membership.
+            for &(l, p) in &anchor_list {
+                let l = l as usize;
+                let p = p as usize;
+                if logical_to_group[l] != Some(i) {
+                    return Err(PyValueError::new_err(format!(
+                        "anchor logical qubit {} is not in group {}'s R set",
+                        l, i,
+                    )));
+                }
+                if physical_to_group[p] != Some(i) {
+                    return Err(PyValueError::new_err(format!(
+                        "anchor physical qubit {} is not in group {}'s Q set",
+                        p, i,
+                    )));
+                }
+                anchor_target[l] = Some(p as u32);
+            }
+
+            // Validate comm ancilla membership.
+            for &anc in &comm {
+                if !physical.contains(&anc) {
+                    return Err(PyValueError::new_err(format!(
+                        "communication ancilla {} in group {} is not in that group's Q set",
+                        anc, i,
+                    )));
+                }
+            }
+
+            groups.push(ConstraintGroup {
+                logical_qubits: logical,
+                physical_qubits: physical,
+                anchors: anchor_list,
+                comm_ancillas: comm,
+            });
+        }
+
+        Ok(Self {
+            groups,
+            logical_to_group,
+            physical_to_group,
+            anchor_target,
+            comm_ancillas,
+            comm_ancilla_edges,
+        })
+    }
+}
+
 /// Helper record struct for a Sabre routing problem.
 ///
 /// This is mostly just encapsulation to make the nested call sites less verbose.
@@ -378,11 +567,18 @@ pub struct RoutingProblem<'a> {
     pub sabre: &'a SabreDAG,
     pub dag: &'a DAGCircuit,
     pub heuristic: &'a Heuristic,
+    /// Fixed-point SABRE constraints, or `None` for compatibility mode.
+    pub constraints: Option<&'a FixedPointConstraints>,
 }
 impl<'a> RoutingProblem<'a> {
     /// The same problem, but using a different [SabreDAG] representation.
     pub fn with_sabre(mut self, sabre: &'a SabreDAG) -> Self {
         self.sabre = sabre;
+        self
+    }
+    /// The same problem, but with different fixed-point constraints.
+    pub fn with_constraints(mut self, constraints: Option<&'a FixedPointConstraints>) -> Self {
+        self.constraints = constraints;
         self
     }
 }
@@ -396,6 +592,8 @@ struct RoutingState<'a> {
     sabre: &'a SabreDAG,
     dag: &'a DAGCircuit,
     heuristic: &'a Heuristic,
+    /// Fixed-point SABRE constraints, or `None` for compatibility mode.
+    constraints: Option<&'a FixedPointConstraints>,
     front_layer: FrontLayer,
     extended_set: ExtendedSet,
     layout: NLayout,
@@ -423,6 +621,7 @@ impl<'a> RoutingState<'a> {
             sabre: self.sabre,
             dag: self.dag,
             heuristic: self.heuristic,
+            constraints: self.constraints,
         }
     }
 
@@ -765,7 +964,7 @@ impl<'a> RoutingState<'a> {
 ///     A two-tuple of the newly routed :class:`.DAGCircuit`, and the layout that maps virtual
 ///     qubits to their assigned physical qubits at the *end* of the circuit execution.
 #[pyfunction]
-#[pyo3(signature=(dag, target, heuristic, initial_layout, num_trials, seed=None, run_in_parallel=None))]
+#[pyo3(signature=(dag, target, heuristic, initial_layout, num_trials, seed=None, run_in_parallel=None, logical_partitions=vec![], physical_partitions=vec![], anchors=vec![], comm_ancillas_vec=vec![], comm_ancilla_edges_vec=vec![]))]
 pub fn sabre_routing(
     dag: &DAGCircuit,
     target: &PyRoutingTarget,
@@ -774,10 +973,30 @@ pub fn sabre_routing(
     num_trials: usize,
     seed: Option<u64>,
     run_in_parallel: Option<bool>,
+    logical_partitions: Vec<Vec<u32>>,
+    physical_partitions: Vec<Vec<u32>>,
+    anchors: Vec<Vec<(u32, u32)>>,
+    comm_ancillas_vec: Vec<Vec<u32>>,
+    comm_ancilla_edges_vec: Vec<Vec<[u32; 2]>>,
 ) -> PyResult<(DAGCircuit, NLayout)> {
     let Some(target) = target.0.as_ref() else {
         // All-to-all coupling.
         return Ok((dag.clone(), initial_layout.clone()));
+    };
+    let num_logical = dag.num_qubits();
+    let num_physical = target.num_qubits();
+    let constraints = if logical_partitions.is_empty() {
+        None
+    } else {
+        Some(FixedPointConstraints::new(
+            logical_partitions,
+            physical_partitions,
+            anchors,
+            comm_ancillas_vec,
+            comm_ancilla_edges_vec,
+            num_logical,
+            num_physical,
+        )?)
     };
     let sabre = SabreDAG::from_dag(dag)?;
     let result = swap_map(
@@ -786,6 +1005,7 @@ pub fn sabre_routing(
             sabre: &sabre,
             dag,
             heuristic,
+            constraints: constraints.as_ref(),
         },
         initial_layout,
         seed,
@@ -835,6 +1055,7 @@ pub fn swap_map_trial<'a>(
         sabre,
         dag,
         heuristic,
+        constraints,
     } = problem;
     let num_qubits: u32 = target.num_qubits().try_into().unwrap();
     let mut state = RoutingState {
@@ -842,6 +1063,7 @@ pub fn swap_map_trial<'a>(
         sabre,
         dag,
         heuristic,
+        constraints,
         order: Vec::with_capacity(problem.sabre.dag.node_count()),
         control_flow: Vec::new(),
         front_layer: FrontLayer::new(num_qubits),
