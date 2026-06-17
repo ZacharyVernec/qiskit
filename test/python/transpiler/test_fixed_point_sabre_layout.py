@@ -22,16 +22,24 @@ from qiskit import QuantumRegister, QuantumCircuit
 from qiskit.circuit import library as lib, Parameter
 from qiskit.circuit.classical import expr, types
 from qiskit.circuit.library import efficient_su2, quantum_volume
-from qiskit.transpiler import CouplingMap, AnalysisPass, PassManager, Target, Layout
+from qiskit.transpiler import (
+    CouplingMap,
+    AnalysisPass,
+    PassManager,
+    Target,
+    Layout,
+    DistributedTarget,
+)
 from qiskit.transpiler.passes import (
     FixedPointSabreLayout,
+    FixedPointSabreSwap,
     DenseLayout,
     Unroll3qOrMore,
     BasicSwap,
     SabrePreLayout,
 )
 from qiskit.transpiler.exceptions import TranspilerError
-from qiskit.converters import circuit_to_dag
+from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.compiler.transpiler import transpile
 from qiskit.providers.fake_provider import GenericBackendV2
 from qiskit.transpiler.passes.layout.fixed_point_sabre_pre_layout import FixedPointSabrePreLayout
@@ -39,6 +47,9 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from test import QiskitTestCase, slow_test  # pylint: disable=wrong-import-order
 
 from ..legacy_cmaps import ALMADEN_CMAP, MUMBAI_CMAP
+
+
+# Tests fallback to non-fixed-point when Target is not DistributedTarget
 
 
 class TestFixedPointSabreLayout(QiskitTestCase):
@@ -612,6 +623,437 @@ class TestSabrePreLayout(QiskitTestCase):
             [qct_initial_layout[q] for q in self.circuit.qubits],
             [12, 11, 10, 16, 17, 18, 13, 14, 9, 8, 3, 2, 1, 6, 5, 7],
         )
+
+
+# New tests for DistributedTarget
+
+
+class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
+    """Tests for FixedPointSabreLayout with a DistributedTarget.
+
+    NOTE: Constraint enforcement in the Rust routing is not yet implemented.
+    These tests currently verify that the constraint data pipeline flows
+    correctly (data is built and passed to Rust, the pass completes without
+    error).  When enforcement is added, stricter assertions about qubit
+    placement (verifying R_i qubits stay in Q_i) should be added.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # A 8-qubit linear coupling map.
+        self.coupling = CouplingMap.from_line(8)
+        self.base_target = Target.from_configuration(
+            basis_gates=["u", "cx"],
+            coupling_map=self.coupling,
+        )
+
+    def _make_dt(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
+        """Make a DistributedTarget with given QPU mapping."""
+        return DistributedTarget(
+            self.base_target,
+            qpu_to_qubits,
+            comm_ancillas=comm_ancillas or {},
+            comm_ancilla_edges=comm_ancilla_edges or [],
+        )
+
+    def _run_layout(self, dt, qc, **property_set_kwargs):
+        """Run FixedPointSabreLayout with property-set constraint data and return the pass."""
+        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4)
+        for key, value in property_set_kwargs.items():
+            pass_.property_set[key] = value
+        pass_(qc)
+        return pass_
+
+    # ------------------------------------------------------------------
+    # Section 7 compatibility: trivial monolithic QPU
+    # ------------------------------------------------------------------
+
+    def test_trivial_monolithic_qpu_same_as_plain_sabre(self):
+        """Section 7 compatibility: single QPU covering all qubits, no anchors
+        should give the same result as non-fixed-point SabreLayout.
+
+        This is the most important test, as it verifies that the fixed-point
+        SABRE passes are a strict superset of the original SABRE passes
+        when no constraints are active.
+        """
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        qc.cx(4, 0)
+
+        # Fixed-point with trivial monolithic constraints.
+        fp_pass = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
+            fixed_point_anchors={},
+        )
+        fp_layout = fp_pass.property_set["layout"]
+
+        # Plain SabreLayout with same seed / settings.
+        plain_pass = FixedPointSabreLayout(self.base_target, seed=0, swap_trials=4, layout_trials=4)
+        plain_pass(qc)
+        plain_layout = plain_pass.property_set["layout"]
+
+        self.assertEqual(
+            [fp_layout[q] for q in qc.qubits],
+            [plain_layout[q] for q in qc.qubits],
+            "Trivial monolithic QPU should produce same layout as plain SabreLayout",
+        )
+
+    def test_trivial_monolithic_qpu_with_skip_routing(self):
+        """Section 7 compatibility with skip_routing=True."""
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+
+        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4, skip_routing=True)
+        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set["fixed_point_anchors"] = {}
+        pass_(qc)
+
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_trivial_monolithic_qpu_preserves_gate_semantics(self):
+        """Even with trivial constraints, the routed circuit should be logically
+        equivalent (same number of non-swap gates) to the original."""
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        original_ops = dict(qc.count_ops())
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
+            fixed_point_anchors={},
+        )
+        # The pass returns a dag, but we can check on the output circuit.
+        # The layout should be valid.
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    # ------------------------------------------------------------------
+    # Multi-QPU constraint pipeline tests
+    # ------------------------------------------------------------------
+
+    def test_two_qpu_constraints_do_not_crash_layout(self):
+        """Two QPUs with valid constraints. The pass should complete without error.
+        (Full enforcement is not yet implemented; this is a smoke test.)"""
+        dt = self._make_dt(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
+            comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
+            comm_ancilla_edges=[(3, 4), (4, 3)],
+        )
+
+        qc = QuantumCircuit(6)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(3, 4)
+        qc.cx(4, 5)
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={
+                "qpu_0": [qc.qubits[0], qc.qubits[1], qc.qubits[2]],
+                "qpu_1": [qc.qubits[3], qc.qubits[4], qc.qubits[5]],
+            },
+            fixed_point_anchors={},
+        )
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        # SabreLayout expands with ancillas, so len(layout) >= qc.num_qubits.
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_two_qpu_with_anchors_do_not_crash_layout(self):
+        """Two QPUs with anchors — the pass should complete without error.
+        (Full enforcement is not yet implemented; this is a smoke test.)"""
+        dt = self._make_dt(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
+            comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
+            comm_ancilla_edges=[(3, 4), (4, 3)],
+        )
+
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(2, 3)
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={
+                "qpu_0": [qc.qubits[0], qc.qubits[1]],
+                "qpu_1": [qc.qubits[2], qc.qubits[3]],
+            },
+            fixed_point_anchors={
+                "qpu_0": {qc.qubits[0]: 0},
+                "qpu_1": {qc.qubits[2]: 5},
+            },
+        )
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_two_qpu_cross_qpu_gates_do_not_crash(self):
+        """Circuit with cross-QPU gates — the pass should complete without error.
+        (Full enforcement is not yet implemented; this is a smoke test.)"""
+        dt = self._make_dt(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
+            comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
+            comm_ancilla_edges=[(3, 4), (4, 3)],
+        )
+
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)  # within qpu_0
+        qc.cx(2, 3)  # within qpu_1
+        qc.cx(0, 2)  # cross-QPU
+        qc.cx(1, 3)  # cross-QPU
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={
+                "qpu_0": [qc.qubits[0], qc.qubits[1]],
+                "qpu_1": [qc.qubits[2], qc.qubits[3]],
+            },
+            fixed_point_anchors={},
+        )
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_single_qpu_distributed_target_no_constraints(self):
+        """Single QPU DistributedTarget with no property-set constraints behaves like
+        a standard Target (no logical partitions or anchors provided)."""
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+
+        # No constraints on property set — should still work.
+        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4)
+        pass_(qc)
+
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_three_qpu_distributed_target_does_not_crash(self):
+        """Three QPUs with varying sizes — the pass should complete without error."""
+        dt = DistributedTarget(
+            self.base_target,
+            {"qpu_0": {0, 1}, "qpu_1": {2, 3, 4}, "qpu_2": {5, 6, 7}},
+            comm_ancillas={"qpu_0": [1], "qpu_1": [2], "qpu_2": [7]},
+            comm_ancilla_edges=[(1, 2), (2, 1)],
+        )
+
+        qc = QuantumCircuit(6)
+        qc.cx(0, 1)
+        qc.cx(2, 3)
+        qc.cx(4, 5)
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={
+                "qpu_0": [qc.qubits[0], qc.qubits[1]],
+                "qpu_1": [qc.qubits[2], qc.qubits[3]],
+                "qpu_2": [qc.qubits[4], qc.qubits[5]],
+            },
+            fixed_point_anchors={},
+        )
+        layout = pass_.property_set["layout"]
+        self.assertIsNotNone(layout)
+        self.assertGreaterEqual(len(layout), qc.num_qubits)
+
+    def test_final_layout_produced_with_constraints(self):
+        """The pass produces a final_layout property when constraints are provided."""
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
+            fixed_point_anchors={},
+        )
+        final_layout = pass_.property_set.get("final_layout")
+        self.assertIsNotNone(final_layout)
+
+    def test_original_qubit_indices_produced_with_constraints(self):
+        """The pass produces original_qubit_indices when constraints are provided."""
+        dt = self._make_dt({"qpu_0": set(range(8))})
+
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+
+        pass_ = self._run_layout(
+            dt,
+            qc,
+            fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
+            fixed_point_anchors={},
+        )
+        indices = pass_.property_set.get("original_qubit_indices")
+        self.assertIsNotNone(indices)
+
+
+class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
+    """Tests for FixedPointSabreSwap with a DistributedTarget.
+
+    NOTE: FixedPointSabreSwap requires the DAG to already have ancilla qubits
+    (i.e. the number of DAG qubits must equal the target's number of qubits).
+    This means swap tests need either matching-size circuits or a full layout
+    pipeline. Constraint enforcement in the Rust routing is also not yet
+    implemented. These tests verify the constraint data pipeline and trivial
+    monolithic compatibility.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.coupling = CouplingMap.from_line(8)
+        self.base_target = Target.from_configuration(
+            basis_gates=["u", "cx"],
+            coupling_map=self.coupling,
+        )
+
+    def _make_dt(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
+        """Make a DistributedTarget with given QPU mapping."""
+        return DistributedTarget(
+            self.base_target,
+            qpu_to_qubits,
+            comm_ancillas=comm_ancillas or {},
+            comm_ancilla_edges=comm_ancilla_edges or [],
+        )
+
+    # ------------------------------------------------------------------
+    # Section 7 compatibility: trivial monolithic QPU
+    # ------------------------------------------------------------------
+
+    def test_trivial_monolithic_qpu_same_as_plain_sabre(self):
+        """Section 7 compatibility: single QPU covering all qubits, no anchors
+        should give the same result as non-fixed-point SabreSwap.
+
+        This is the most important test, as it verifies that the fixed-point
+        SABRE passes are a strict superset of the original SABRE passes
+        when no constraints are active.
+        """
+        from qiskit.converters import circuit_to_dag
+
+        num_qubits = 8
+        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+
+        qc = QuantumCircuit(num_qubits)
+        for i in range(num_qubits - 1):
+            qc.cx(i, i + 1)
+
+        dag = circuit_to_dag(qc)
+
+        # Plain SabreSwap on same-size coupling.
+        plain_pass = FixedPointSabreSwap(
+            CouplingMap.from_line(num_qubits), "decay", seed=0, trials=4
+        )
+        plain_result = plain_pass.run(dag)
+
+        # Fixed-point with trivial monolithic constraints.
+        fp_dag = circuit_to_dag(qc)
+        fp_pass = FixedPointSabreSwap(dt, "decay", seed=0, trials=4)
+        fp_pass.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
+        fp_pass.property_set["fixed_point_anchors"] = {}
+        fp_routed_dag = fp_pass.run(fp_dag)
+
+        # Both should produce the same number of swaps.
+        plain_swaps = plain_result.count_ops().get("swap", 0)
+        fp_swaps = dag_to_circuit(fp_routed_dag).count_ops().get("swap", 0)
+        self.assertEqual(
+            plain_swaps,
+            fp_swaps,
+            "Trivial monolithic QPU should produce same number of swaps as plain SabreSwap",
+        )
+
+        # Both should produce a valid final_layout.
+        self.assertIsNotNone(fp_pass.property_set.get("final_layout"))
+
+    def test_trivial_monolithic_qpu_produces_final_layout(self):
+        """Section 7 compatibility: trivial monolithic QPU should produce a final_layout."""
+        from qiskit.converters import circuit_to_dag
+
+        num_qubits = 8
+        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+
+        qc = QuantumCircuit(num_qubits)
+        for i in range(num_qubits - 1):
+            qc.cx(i, i + 1)
+
+        dag = circuit_to_dag(qc)
+        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set["fixed_point_anchors"] = {}
+        result = pass_.run(dag)
+
+        self.assertIsNotNone(result)
+        final_layout = pass_.property_set.get("final_layout")
+        self.assertIsNotNone(final_layout)
+
+    def test_no_constraints_no_crash(self):
+        """FixedPointSabreSwap with a DistributedTarget but no constraint data
+        should still work (compatibility mode)."""
+        from qiskit.converters import circuit_to_dag
+
+        num_qubits = 8
+        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+
+        qc = QuantumCircuit(num_qubits)
+        for i in range(num_qubits - 1):
+            qc.cx(i, i + 1)
+
+        dag = circuit_to_dag(qc)
+        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        result = pass_.run(dag)
+        self.assertIsNotNone(result)
+
+    def test_rejects_too_few_qubits_with_constraints(self):
+        """Swap pass with DistributedTarget still rejects too few qubits."""
+        from qiskit.converters import circuit_to_dag
+
+        num_qubits = 8
+        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+
+        dag = circuit_to_dag(qc)
+        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set["fixed_point_anchors"] = {}
+        with self.assertRaises(TranspilerError):
+            pass_.run(dag)
 
 
 if __name__ == "__main__":

@@ -149,15 +149,12 @@ class DistributedTarget(Target):
         if comm_ancillas is None:
             if n_qpus > 1:
                 raise ValueError(
-                    "'comm_ancillas' argument is required when there is more than "
-                    "one QPU."
+                    "'comm_ancillas' argument is required when there is more than " "one QPU."
                 )
             comm_ancillas = {}
         for qpu in comm_ancillas:
             if qpu not in all_qpu_qubits:
-                raise ValueError(
-                    f"Communication ancillas specified for unknown QPU '{qpu}'."
-                )
+                raise ValueError(f"Communication ancillas specified for unknown QPU '{qpu}'.")
         if n_qpus > 1:
             for qpu in all_qpu_qubits:
                 if qpu not in comm_ancillas:
@@ -249,9 +246,7 @@ class DistributedTarget(Target):
         self._qubits_to_qpu: Dict[int, str] = {
             q: qpu for qpu, qubits in qpu_to_qubits.items() for q in qubits
         }
-        self._comm_ancillas: Dict[str, List[int]] = (
-            dict(comm_ancillas) if comm_ancillas else {}
-        )
+        self._comm_ancillas: Dict[str, List[int]] = dict(comm_ancillas) if comm_ancillas else {}
         self._comm_ancilla_edges: List[Tuple[int, int]] = (
             list(comm_ancilla_edges) if comm_ancilla_edges else []
         )
@@ -291,6 +286,3 @@ class DistributedTarget(Target):
             f"qpus={len(self._qpu_to_qubits)}, "
             f"description={self.description!r})"
         )
-
-
-

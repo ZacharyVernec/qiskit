@@ -79,17 +79,13 @@ class TestDistributedTarget(QiskitTestCase):
         qpu_to_qubits = {"qpu_0": {0, 1, 2, 3}}
         # Valid: ancilla belongs to qpu_0.
         comm_ancillas = {"qpu_0": [0]}
-        dt = DistributedTarget(
-            self.target, qpu_to_qubits, comm_ancillas=comm_ancillas
-        )
+        dt = DistributedTarget(self.target, qpu_to_qubits, comm_ancillas=comm_ancillas)
         self.assertEqual(dt.comm_ancillas, {"qpu_0": [0]})
 
         # Invalid: ancilla does not belong to qpu_0.
         comm_ancillas_bad = {"qpu_0": [4]}
         with self.assertRaises(ValueError) as ctx:
-            DistributedTarget(
-                self.target, qpu_to_qubits, comm_ancillas=comm_ancillas_bad
-            )
+            DistributedTarget(self.target, qpu_to_qubits, comm_ancillas=comm_ancillas_bad)
         self.assertIn("not in that QPU", str(ctx.exception))
 
     def test_empty_qpu_qubit_set_raises(self):
