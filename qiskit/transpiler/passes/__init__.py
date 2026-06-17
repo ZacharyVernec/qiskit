@@ -10,7 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 #
-# Modified by Zachary Vernec to add FixedPointSabre
+# Modified by Zachary Vernec to add FixedPoint Sabre and VF2
 
 """
 ===================================================
@@ -205,6 +205,8 @@ from .layout import FullAncillaAllocation
 from .layout import SabrePreLayout
 from .layout import FixedPointSabrePreLayout
 from .layout import FixedPointConstraintValidation
+from .layout import FixedPointVF2Layout
+from .layout import FixedPointVF2PostLayout
 
 # routing
 from .routing import BasicSwap

@@ -67,7 +67,7 @@ fn _accelerate(m: &Bound<PyModule>) -> PyResult<()> {
     add_submodule(m, ::qiskit_transpiler::passes::remove_diagonal_gates_before_measure_mod, "remove_diagonal_gates_before_measure")?;
     add_submodule(m, ::qiskit_transpiler::passes::remove_identity_equiv_mod, "remove_identity_equiv")?;
     add_submodule(m, ::qiskit_accelerate::results::results, "results")?;
-    add_submodule(m, ::qiskit_transpiler::passes::fixed_point_sabre::sabre, "fixed_point_sabre")?;
+    add_submodule(m, ::qiskit_transpiler::passes::fixed_point_sabre::sabre, "fixed_point_sabre")?; // avoid name collisions
     add_submodule(m, ::qiskit_transpiler::passes::sabre::sabre, "sabre")?;
     add_submodule(m, ::qiskit_accelerate::sampled_exp_val::sampled_exp_val, "sampled_exp_val")?;
     add_submodule(m, ::qiskit_quantum_info::sparse_observable::sparse_observable, "sparse_observable")?;
@@ -82,6 +82,7 @@ fn _accelerate(m: &Bound<PyModule>) -> PyResult<()> {
     add_submodule(m, ::qiskit_transpiler::passes::unitary_synthesis_mod, "unitary_synthesis")?;
     add_submodule(m, ::qiskit_accelerate::uc_gate::uc_gate, "uc_gate")?;
     add_submodule(m, ::qiskit_transpiler::passes::unroll_3q_or_more_mod, "unroll_3q_or_more")?;
+    add_submodule(m, ::qiskit_transpiler::passes::fixed_point_vf2::vf2_layout_mod, "fixed_point_vf2")?; // avoid name collisions
     add_submodule(m, ::qiskit_transpiler::passes::vf2_layout_mod, "vf2_layout")?;
     add_submodule(m, ::qiskit_circuit::circuit, "circuit")?;
     add_submodule(m, ::qiskit_circuit::converters::converters, "converters")?;

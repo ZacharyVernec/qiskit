@@ -38,6 +38,7 @@ mod disjoint_layout;
 mod elide_permutations;
 mod filter_op_nodes;
 pub mod fixed_point_sabre;
+pub mod fixed_point_vf2;
 mod gate_direction;
 mod gates_in_basis;
 mod high_level_synthesis;

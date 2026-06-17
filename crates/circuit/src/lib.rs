@@ -9,6 +9,8 @@
 // Any modifications or derivative works of this code must retain this
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
+//
+// Modified by Zachary Vernec to pub fixed_point_vf2
 
 use std::env;
 
@@ -39,6 +41,7 @@ pub mod register_data;
 pub mod slice;
 pub mod util;
 pub mod vf2;
+pub mod fixed_point_vf2;
 
 mod variable_mapper;
 

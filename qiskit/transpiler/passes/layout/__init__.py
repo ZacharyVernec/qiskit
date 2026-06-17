@@ -10,7 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 #
-# Modified by Zachary Vernec to add fixed_point_sabre
+# Modified by Zachary Vernec to add fixed_point savre and vf2
 
 """Module containing transpiler layout passes."""
 
@@ -29,3 +29,5 @@ from .full_ancilla_allocation import FullAncillaAllocation
 from .sabre_pre_layout import SabrePreLayout
 from .fixed_point_sabre_pre_layout import FixedPointSabrePreLayout
 from .fixed_point_constraint_validation import FixedPointConstraintValidation
+from .fixed_point_vf2_layout import FixedPointVF2Layout
+from .fixed_point_vf2_post_layout import FixedPointVF2PostLayout
