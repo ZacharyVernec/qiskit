@@ -831,5 +831,158 @@ class TestMultipleTrials(QiskitTestCase):
         self.assertEqual(res.num_qubits, 16)
 
 
+@ddt.ddt
+class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
+    """Test anchor (pre-assigned qubit) support in FixedPointVF2Layout."""
+
+    seed = 42
+
+    def test_single_anchor_respected(self):
+        """A single anchor pair must appear in the final layout."""
+        target = Target(num_qubits=3)
+        target.add_instruction(
+            CXGate(),
+            {
+                (0, 1): InstructionProperties(error=0.01),
+                (1, 2): InstructionProperties(error=0.01),
+            },
+        )
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        # Anchor virtual 0 → physical 1, virtual 1 → physical 2.
+        anchors = {0: 1, 1: 2}
+        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed, anchors=anchors)
+        vf2_pass(qc)
+        self.assertEqual(
+            vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
+            FixedPointVF2LayoutStopReason.SOLUTION_FOUND,
+        )
+        layout = vf2_pass.property_set["layout"]
+        self.assertEqual(layout[qc.qubits[0]], 1)
+        self.assertEqual(layout[qc.qubits[1]], 2)
+
+    def test_anchors_with_strict_direction(self):
+        """Anchors must work with strict_direction enabled."""
+        cmap = CouplingMap([[0, 1], [1, 2]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)  # 0→1 direction
+        anchors = {0: 1, 1: 2}  # Must follow direction
+        vf2_pass = FixedPointVF2Layout(
+            cmap, strict_direction=True, seed=self.seed, anchors=anchors, max_trials=1
+        )
+        dag = circuit_to_dag(qc)
+        vf2_pass.run(dag)
+        self.assertEqual(
+            vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
+            FixedPointVF2LayoutStopReason.SOLUTION_FOUND,
+        )
+        layout = vf2_pass.property_set["layout"]
+        self.assertEqual(layout[qc.qubits[0]], 1)
+        self.assertEqual(layout[qc.qubits[1]], 2)
+
+    def test_infeasible_anchor_no_solution(self):
+        """An anchor that cannot be satisfied must raise ValueError (duplicate physical)."""
+        cmap = CouplingMap([[0, 1]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        # Anchor virtual 0 → physical 0, virtual 1 → physical 0 (conflict!).
+        anchors = {0: 0, 1: 0}
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        dag = circuit_to_dag(qc)
+        with self.assertRaises(ValueError):
+            vf2_pass.run(dag)
+
+    def test_anchor_virtual_not_in_circuit(self):
+        """Anchoring a virtual qubit not in the circuit must raise an error."""
+        cmap = CouplingMap([[0, 1]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        # Virtual qubit 5 doesn't exist (circuit has only 0, 1).
+        anchors = {5: 0}
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        dag = circuit_to_dag(qc)
+        with self.assertRaises(ValueError):
+            vf2_pass.run(dag)
+
+    def test_empty_anchors_same_as_none(self):
+        """Empty anchors dict must behave identically to anchors=None."""
+        cmap = CouplingMap([[0, 1], [1, 2]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+
+        dag = circuit_to_dag(qc)
+        pass_empty = FixedPointVF2Layout(cmap, seed=self.seed, anchors={}, max_trials=1)
+        pass_none = FixedPointVF2Layout(cmap, seed=self.seed, anchors=None, max_trials=1)
+        pass_empty.run(dag)
+        dag2 = circuit_to_dag(qc)
+        pass_none.run(dag2)
+
+        self.assertEqual(
+            pass_empty.property_set["FixedPointVF2Layout_stop_reason"],
+            pass_none.property_set["FixedPointVF2Layout_stop_reason"],
+        )
+
+    def test_anchor_physical_not_in_coupling(self):
+        """Anchoring to a physical qubit outside the coupling map must raise an error."""
+        cmap = CouplingMap([[0, 1]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        # Physical qubit 99 doesn't exist.
+        anchors = {0: 99}
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        dag = circuit_to_dag(qc)
+        with self.assertRaises(ValueError):
+            vf2_pass.run(dag)
+
+    def test_anchor_from_property_set(self):
+        """Anchors read from property_set['fixed_point_anchors'] must work."""
+        cmap = CouplingMap([[0, 1], [1, 2]])
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
+        vf2_pass.property_set["fixed_point_anchors"] = {0: 1, 1: 2}
+        dag = circuit_to_dag(qc)
+        vf2_pass.run(dag)
+        self.assertEqual(
+            vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
+            FixedPointVF2LayoutStopReason.SOLUTION_FOUND,
+        )
+        layout = vf2_pass.property_set["layout"]
+        self.assertEqual(layout[qc.qubits[0]], 1)
+        self.assertEqual(layout[qc.qubits[1]], 2)
+
+    def test_idle_anchor_not_reassigned_by_map_free_qubits(self):
+        """An anchor on an idle (no-gate) qubit must survive map_free_qubits.
+        map_free_qubits normally assigns idle qubits to the best available physical
+        qubits.  An anchored idle qubit must stay at its designated physical qubit
+        instead of being reassigned.
+        """
+        # 3-qubit device: 0-1-2 line
+        target = Target(num_qubits=3)
+        target.add_instruction(
+            CXGate(),
+            {
+                (0, 1): InstructionProperties(error=0.01),
+                (1, 2): InstructionProperties(error=0.01),
+            },
+        )
+        # Circuit only uses qubits 0 and 1; qubit 2 is idle.
+        qc = QuantumCircuit(3)
+        qc.cx(0, 1)
+        # Anchor the idle qubit 2 to physical qubit 0 (the "best" qubit if errors
+        # are low, but it must stay at 0 because of the anchor).
+        anchors = {2: 0}
+        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed, anchors=anchors, max_trials=1)
+        vf2_pass(qc)
+        self.assertEqual(
+            vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
+            FixedPointVF2LayoutStopReason.SOLUTION_FOUND,
+        )
+        layout = vf2_pass.property_set["layout"]
+        # The idle qubit 2 must be at physical 0 as anchored.
+        self.assertEqual(layout[qc.qubits[2]], 0,
+                         "idle anchored qubit must not be reassigned by map_free_qubits")
+
+
 if __name__ == "__main__":
     unittest.main()

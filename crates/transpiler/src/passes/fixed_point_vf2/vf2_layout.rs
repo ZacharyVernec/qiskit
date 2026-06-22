@@ -16,7 +16,7 @@
 use std::convert::Infallible;
 use std::time::Instant;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use indexmap::{IndexMap, IndexSet};
 use rand::prelude::*;
 use rand_pcg::Pcg64Mcg;
@@ -24,6 +24,7 @@ use rayon::prelude::*;
 use rustworkx_core::petgraph::data::Create;
 use rustworkx_core::petgraph::prelude::*;
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::{IntoPyObjectExt, create_exception, wrap_pyfunction};
 
@@ -31,7 +32,7 @@ use qiskit_circuit::dag_circuit::DAGCircuit;
 use qiskit_circuit::interner::{Interned, Interner};
 use qiskit_circuit::operations::{ControlFlowView, Operation};
 use qiskit_circuit::packed_instruction::PackedInstruction;
-use qiskit_circuit::{PhysicalQubit, VirtualQubit, vf2};
+use qiskit_circuit::{PhysicalQubit, VirtualQubit, fixed_point_vf2 as vf2};
 
 use super::error_map::ErrorMap;
 use crate::target::{Qargs, QargsRef, Target, TargetOperation};
@@ -212,6 +213,8 @@ impl VF2PassReturn {
 }
 
 /// Build an average error map for a given target.
+/// Each node has its own error rate by averaging over possible single-qubit gates
+/// Each edge has the same by averaging over possible two-qubit gates 
 ///
 /// Returns `None` if there is a global 2q operation to avoid attempting to construct a meaningless
 /// all-to-all connectivity graph.
@@ -729,23 +732,82 @@ where
     Some(score)
 }
 
+/// Translate raw anchor pairs (virtual_qubit_index → physical_qubit_index) into VF2 node-index
+/// pairs, validating that all referenced qubits exist and are unique.
+///
+/// Returns `Vec<(needle_node_index, haystack_node_index)>` suitable for
+/// [`vf2::Vf2::with_initial_mapping`].
+///
+/// Anchors on idle virtual qubits (those with no operations) are excluded from the VF2 mapping
+/// but still validated for physical-qubit existence and uniqueness.  They are handled later by
+/// [`map_free_qubits`] or the equivalent post-processing step.
+fn translate_and_validate_anchors(
+    anchors: &HashMap<u32, u32>,
+    interaction_nodes: &IndexSet<VirtualQubit>,
+    coupling_qubits: &[PhysicalQubit],
+    num_circuit_qubits: usize,
+) -> PyResult<Vec<(NodeIndex, NodeIndex)>> {
+    let mut pairs = Vec::with_capacity(anchors.len());
+    let mut seen_physical: HashSet<u32> = HashSet::with_capacity(anchors.len());
+
+    for (&v_idx, &p_idx) in anchors {
+        let virt = VirtualQubit(v_idx);
+        let phys = PhysicalQubit(p_idx);
+
+        // Validate virtual qubit is in range for the circuit.
+        if v_idx as usize >= num_circuit_qubits {
+            return Err(PyValueError::new_err(format!(
+                "anchor virtual qubit {} is out of range (circuit has {} qubits)",
+                v_idx, num_circuit_qubits,
+            )));
+        }
+
+        // Validate physical qubit exists in coupling graph.
+        let Some(p_pos) = coupling_qubits.iter().position(|q| *q == phys) else {
+            return Err(PyValueError::new_err(format!(
+                "anchor physical qubit {} is not present in the coupling graph",
+                p_idx,
+            )));
+        };
+
+        // Check for duplicate physical assignments.
+        if !seen_physical.insert(p_idx) {
+            return Err(PyValueError::new_err(format!(
+                "anchor physical qubit {} is assigned to more than one virtual qubit",
+                p_idx,
+            )));
+        }
+
+        // Look up the virtual qubit.  It may be in the interaction graph (`nodes`), or it may
+        // be idle/uncoupled (no 2q interactions).  Idle/uncoupled anchors are skipped from VF2
+        // but their physical qubits are reserved by the caller.
+        if let Some(n_pos) = interaction_nodes.get_index_of(&virt) {
+            pairs.push((NodeIndex::new(n_pos), NodeIndex::new(p_pos)));
+        }
+        // else: virtual qubit is idle or uncoupled; skip from VF2 mapping.
+    }
+
+    Ok(pairs)
+}
+
 #[pyfunction]
-#[pyo3(signature = (dag, target, config, *, strict_direction=false, avg_error_map=None))]
+#[pyo3(signature = (dag, target, config, *, strict_direction=false, avg_error_map=None, anchors=None))]
 pub fn vf2_layout_pass_average(
     dag: &DAGCircuit,
     target: &Target,
     config: &Vf2PassConfiguration,
     strict_direction: bool,
     avg_error_map: Option<ErrorMap>,
+    anchors: Option<HashMap<u32, u32>>,
 ) -> PyResult<Vf2PassReturn> {
     let add_interaction = |count: &mut usize, _: &PackedInstruction, repeats: usize| {
         *count += repeats;
         true
     };
-    let interactions = VirtualInteractions::from_dag(dag, add_interaction)?
+    let mut interactions = VirtualInteractions::from_dag(dag, add_interaction)?
         .expect("weighting function is infallible");
 
-    let score =
+    let score = // gate count * gate error rate
         |count: &usize, err: &f64| -> Result<f64, Infallible> { Ok(*err * (*count as f64)) };
     let Some(avg_error_map) = avg_error_map.or_else(|| build_average_error_map(target)) else {
         return Ok(Vf2PassReturn::NoSolution);
@@ -756,15 +818,17 @@ pub fn vf2_layout_pass_average(
     if !strict_direction {
         loosen_directionality(&mut coupling_graph);
     }
-    let best_score = if config.score_initial_layout {
+    let best_score = if config.score_initial_layout { // Not run from VF2Layout
         score_identity_layout(&interactions, &coupling_graph, vf2::Scorer(score))
     } else {
         None
     };
     let num_physical_qubits = coupling_graph.node_count();
-    let mut coupling_qubits = (0..num_physical_qubits)
+    let mut coupling_qubits = (0..num_physical_qubits) // canonical id of qubits/nodes in coupling map
         .map(|k| PhysicalQubit::new(k as u32))
         .collect::<Vec<_>>();
+    // If seed is not None (i.e. -1 in Python), relabel nodes in coupling graph.
+    // This doesn't change the circuit, but it does change the search order of VF2.
     if let Some(seed) = config.shuffle_seed {
         coupling_qubits.shuffle(&mut Pcg64Mcg::seed_from_u64(seed));
         let order = coupling_qubits
@@ -774,10 +838,27 @@ pub fn vf2_layout_pass_average(
         coupling_graph = vf2::reorder_nodes(&coupling_graph, &order);
     }
 
+    // Translate and validate anchors.
+    let anchor_pairs = if let Some(ref anchors) = anchors {
+        if anchors.is_empty() {
+            Vec::new()
+        } else {
+            translate_and_validate_anchors(
+                anchors,
+                &interactions.nodes,
+                &coupling_qubits,
+                dag.num_qubits(),
+            )?
+        }
+    } else {
+        Vec::new()
+    };
+
     let vf2 = vf2::Vf2::new(&interactions.graph, &coupling_graph, vf2::Problem::Subgraph)
         .with_scoring(score, score)
         .with_restriction(vf2::Restriction::Decreasing(best_score))
-        .with_vf2pp_ordering();
+        .with_vf2pp_ordering()
+        .with_initial_mapping(anchor_pairs);
     let Some(mapping) = minimize_vf2(vf2, config) else {
         if best_score.is_some() {
             return Ok(Vf2PassReturn::NoImprovement);
@@ -786,10 +867,26 @@ pub fn vf2_layout_pass_average(
         }
     };
     // Remap node indices back to virtual/physical qubits.
-    let mapping = mapping
+    let mut mapping: HashMap<VirtualQubit, PhysicalQubit> = mapping
         .iter()
         .map(|(k, v)| (interactions.nodes[k.index()], coupling_qubits[v.index()]))
         .collect();
+
+    // Pre-assign idle/uncoupled anchors into the partial layout and remove them
+    // from the idle/uncoupled sets so that map_free_qubits does not reassign
+    // them to low-error physical qubits.
+    if let Some(ref anchors) = anchors {
+        for (&v_idx, &p_idx) in anchors {
+            let virt = VirtualQubit(v_idx);
+            let phys = PhysicalQubit(p_idx);
+            if !interactions.nodes.contains(&virt) {
+                mapping.insert(virt, phys);
+                interactions.uncoupled.swap_remove(&virt);
+                interactions.idle.swap_remove(&virt);
+            }
+        }
+    }
+
     match map_free_qubits(num_physical_qubits, interactions, mapping, &avg_error_map) {
         Some(mapping) => Ok(Vf2PassReturn::Solution(mapping)),
         None => Ok(Vf2PassReturn::NoSolution),
@@ -797,11 +894,12 @@ pub fn vf2_layout_pass_average(
 }
 
 #[pyfunction]
-#[pyo3(signature = (dag, target, config))]
+#[pyo3(signature = (dag, target, config, *, anchors=None))]
 pub fn vf2_layout_pass_exact(
     dag: &DAGCircuit,
     target: &Target,
     config: &Vf2PassConfiguration,
+    anchors: Option<HashMap<u32, u32>>,
 ) -> PyResult<Vf2PassReturn> {
     let Some((mut coupling_graph, interner)) = build_exact_coupling_map(target) else {
         return Ok(Vf2PassReturn::NoSolution);
@@ -857,10 +955,28 @@ pub fn vf2_layout_pass_exact(
             .collect::<Vec<_>>();
         coupling_graph = vf2::reorder_nodes(&coupling_graph, &order);
     }
+
+    // Translate and validate anchors.
+    let anchor_pairs = if let Some(ref anchors) = anchors {
+        if anchors.is_empty() {
+            Vec::new()
+        } else {
+            translate_and_validate_anchors(
+                anchors,
+                &interactions.nodes,
+                &coupling_qubits,
+                dag.num_qubits(),
+            )?
+        }
+    } else {
+        Vec::new()
+    };
+
     let vf2 = vf2::Vf2::new(&interactions.graph, &coupling_graph, vf2::Problem::Subgraph)
         .with_semantics(score, score)
         .with_restriction(vf2::Restriction::Decreasing(best_score))
-        .with_vf2pp_ordering();
+        .with_vf2pp_ordering()
+        .with_initial_mapping(anchor_pairs);
     let Some(mapping) = minimize_vf2(vf2, config) else {
         if best_score.is_some() {
             return Ok(Vf2PassReturn::NoImprovement);
@@ -869,10 +985,25 @@ pub fn vf2_layout_pass_exact(
         }
     };
     // Remap node indices back to virtual/physical qubits.
-    let mapping = mapping
+    let mut mapping: HashMap<VirtualQubit, PhysicalQubit> = mapping
         .iter()
         .map(|(k, v)| (interactions.nodes[k.index()], coupling_qubits[v.index()]))
         .collect();
+
+    // Idle anchor qubits are not in the interaction graph even after
+    // move_all_uncoupled_to_graph; add them manually.
+    if let Some(ref anchors) = anchors {
+        for (&v_idx, &p_idx) in anchors {
+            let virt = VirtualQubit(v_idx);
+            let phys = PhysicalQubit(p_idx);
+            if !interactions.nodes.contains(&virt)
+                && !interactions.uncoupled.contains_key(&virt)
+            {
+                mapping.insert(virt, phys);
+            }
+        }
+    }
+
     Ok(Vf2PassReturn::Solution(mapping))
 }
 

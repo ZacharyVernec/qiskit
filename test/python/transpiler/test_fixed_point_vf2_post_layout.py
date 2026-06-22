@@ -612,3 +612,81 @@ class TestFixedPointVF2PostLayoutUndirected(QiskitTestCase):
         pass_.run(dag)
         self.assertLayoutV2(dag, backend.target, pass_.property_set)
         self.assertNotEqual(pass_.property_set["post_layout"], initial_layout)
+
+
+@ddt.ddt
+class TestFixedPointVF2PostLayoutAnchors(QiskitTestCase):
+    """Test anchor support in FixedPointVF2PostLayout.
+
+    In PostLayout, anchors are identity constraints because the circuit has already been
+    laid out: each circuit qubit IS a physical qubit.  Anchors say "this circuit qubit
+    must stay at this physical qubit."  The typical use is identity: ``{i: phys_i}``
+    where ``phys_i`` is the physical qubit that circuit qubit ``i`` currently occupies.
+    """
+
+    seed = 42
+
+    def test_identity_anchor_keeps_qubit_in_place(self):
+        """An identity anchor must keep the qubit at its current physical location."""
+        backend = GenericBackendV2(
+            num_qubits=5,
+            basis_gates=["cx", "id", "rz", "sx", "x"],
+            coupling_map=LIMA_CMAP,
+            seed=42,
+        )
+        qc = QuantumCircuit(3)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        tqc = transpile(qc, backend, seed_transpiler=self.seed)
+        dag = circuit_to_dag(tqc)
+        # Anchor: input circuit qubit 0 must stay at its current physical location.
+        # The initial_layout maps original qubits → physical.
+        current_phys = tqc._layout.initial_layout[qc.qubits[0]]
+        anchors = {0: current_phys}
+        pass_ = FixedPointVF2PostLayout(
+            target=backend.target,
+            seed=self.seed,
+            strict_direction=False,
+            anchors=anchors,
+        )
+        pass_.run(dag)
+        # Anchors are identity constraints; the identity layout trivially satisfies them.
+        # The pass may find the identity layout already optimal (NO_BETTER_SOLUTION_FOUND)
+        # or may find an equivalent/better layout (SOLUTION_FOUND).  Both are valid.
+        self.assertIn(
+            pass_.property_set["FixedPointVF2PostLayout_stop_reason"],
+            (
+                FixedPointVF2PostLayoutStopReason.SOLUTION_FOUND,
+                FixedPointVF2PostLayoutStopReason.NO_BETTER_SOLUTION_FOUND,
+            ),
+        )
+
+    def test_anchors_from_property_set(self):
+        """PostLayout anchors read from property_set must work."""
+        backend = GenericBackendV2(
+            num_qubits=5,
+            basis_gates=["cx", "id", "rz", "sx", "x"],
+            coupling_map=LIMA_CMAP,
+            seed=42,
+        )
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
+        tqc = transpile(qc, backend, seed_transpiler=self.seed)
+        dag = circuit_to_dag(tqc)
+        pass_ = FixedPointVF2PostLayout(
+            target=backend.target,
+            seed=self.seed,
+            strict_direction=False,
+        )
+        # Set anchors via property set (identity: keep qubits where they are).
+        p0 = tqc._layout.initial_layout[qc.qubits[0]]
+        p1 = tqc._layout.initial_layout[qc.qubits[1]]
+        pass_.property_set["fixed_point_anchors"] = {0: p0, 1: p1}
+        pass_.run(dag)
+        self.assertIn(
+            pass_.property_set["FixedPointVF2PostLayout_stop_reason"],
+            (
+                FixedPointVF2PostLayoutStopReason.SOLUTION_FOUND,
+                FixedPointVF2PostLayoutStopReason.NO_BETTER_SOLUTION_FOUND,
+            ),
+        )

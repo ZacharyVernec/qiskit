@@ -27,6 +27,7 @@ pub mod dag_node;
 mod dot_utils;
 pub mod duration;
 pub mod error;
+pub mod fixed_point_vf2;
 pub mod gate_matrix;
 pub mod imports;
 pub mod instruction;
@@ -41,7 +42,6 @@ pub mod register_data;
 pub mod slice;
 pub mod util;
 pub mod vf2;
-pub mod fixed_point_vf2;
 
 mod variable_mapper;
 

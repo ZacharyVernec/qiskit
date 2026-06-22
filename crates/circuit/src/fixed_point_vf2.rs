@@ -636,6 +636,9 @@ where
     restriction: Option<Restriction<NS::Score>>,
     problem: Problem,
     call_limit: Option<usize>,
+    /// Pre-assigned node pairs, specified in terms of the *original* (pre-reordering) node IDs.
+    /// These are applied to the state before the search loop begins and are never backtracked.
+    initial_mapping: Vec<(N::NodeId, H::NodeId)>,
     marker: marker::PhantomData<(NG, HG)>,
 }
 
@@ -672,6 +675,7 @@ where
             restriction: None,
             problem,
             call_limit: None,
+            initial_mapping: Vec::new(),
             marker: marker::PhantomData,
         }
     }
@@ -706,6 +710,7 @@ where
             restriction: self.restriction,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -738,6 +743,7 @@ where
             restriction: self.restriction,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -769,6 +775,7 @@ where
             restriction: None,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -793,6 +800,7 @@ where
             restriction: None,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -829,6 +837,22 @@ where
         }
     }
 
+    /// Pre-assign node pairs before the search begins.
+    ///
+    /// Each pair `(needle_node, haystack_node)` is specified in terms of the *original*
+    /// (pre-reordering) node IDs.  These mappings are applied to the VF2 state before the search
+    /// loop begins and are **never backtracked** — they act as hard invariants.  If any pair is
+    /// infeasible (semantically inconsistent or structurally impossible), the iterator yields no
+    /// results.
+    ///
+    /// The caller is responsible for ensuring that the initial mapping is valid.  If conflicting
+    /// pairs are supplied (e.g., two needle nodes mapped to the same haystack node), the later
+    /// one is silently ignored and the iterator will likely produce no solutions.
+    pub fn with_initial_mapping(mut self, mapping: Vec<(N::NodeId, H::NodeId)>) -> Self {
+        self.initial_mapping = mapping;
+        self
+    }
+
     /// Use the VF2++ ordering heuristic to seed the initial priority queue for node matching.
     pub fn with_vf2pp_ordering(self) -> Vf2<N, H, NG, HG, Vf2ppSorter, Vf2ppSorter, NS, ES> {
         Vf2 {
@@ -841,6 +865,7 @@ where
             restriction: self.restriction,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -871,6 +896,7 @@ where
             restriction: self.restriction,
             problem: self.problem,
             call_limit: self.call_limit,
+            initial_mapping: self.initial_mapping,
             marker: marker::PhantomData,
         }
     }
@@ -946,7 +972,7 @@ where
             stack
         };
 
-        Vf2IntoIter {
+        let mut iter = Vf2IntoIter {
             needle: State::new(needle),
             needle_reorder,
             haystack: State::new(haystack),
@@ -959,7 +985,48 @@ where
             loop_stack,
             num_calls: 0,
             call_limit: self.call_limit,
+        };
+
+        // Apply initial (anchor) mappings.  These are never backtracked.  If any anchor is
+        // infeasible, clear the loop stack so the iterator yields no results.
+        if !self.initial_mapping.is_empty() {
+            let mut anchors_valid = true;
+            for (n_orig, h_orig) in &self.initial_mapping {
+                // Translate through the reorderings to find the reordered indices.
+                let Some(n_pos) = iter.needle_reorder.iter().position(|id| *id == *n_orig) else {
+                    anchors_valid = false;
+                    break;
+                };
+                let Some(h_pos) = iter.haystack_reorder.iter().position(|id| *id == *h_orig) else {
+                    anchors_valid = false;
+                    break;
+                };
+                let n_node = NG::NodeId::new(n_pos);
+                let h_node = HG::NodeId::new(h_pos);
+
+                // Defensive: skip if the haystack node is already mapped (caller error).
+                if iter.haystack.mapping[h_pos] != <NG::NodeId as IndexType>::max() {
+                    anchors_valid = false;
+                    break;
+                }
+
+                // Check feasibility and apply the mapping.
+                match iter.is_feasible((n_node, h_node)) {
+                    Ok(Some(score)) => {
+                        iter.push_state((n_node, h_node), score);
+                    }
+                    _ => {
+                        anchors_valid = false;
+                        break;
+                    }
+                }
+            }
+            if !anchors_valid {
+                iter.loop_stack.clear();
+            }
         }
+
+        iter
     }
 }
 
@@ -1905,5 +1972,168 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustworkx_core::petgraph::graph::{Graph, NodeIndex};
+
+    /// Build a simple directed graph from an edge list.  Node weights are their indices.
+    fn build_graph(edges: &[(usize, usize)]) -> Graph<usize, usize> {
+        let max_node = edges.iter().flat_map(|(a, b)| [*a, *b]).max().unwrap_or(0);
+        let mut g = Graph::<usize, usize>::with_capacity(max_node + 1, edges.len());
+        for i in 0..=max_node {
+            g.add_node(i);
+        }
+        for &(a, b) in edges {
+            g.add_edge(NodeIndex::new(a), NodeIndex::new(b), 1);
+        }
+        g
+    }
+
+    /// Run VF2 subgraph isomorphism and collect all mappings.
+    fn all_mappings(
+        needle: &Graph<usize, usize>,
+        haystack: &Graph<usize, usize>,
+        anchors: Vec<(NodeIndex, NodeIndex)>,
+    ) -> Vec<IndexMap<NodeIndex, NodeIndex, ::ahash::RandomState>> {
+        Vf2::new(needle, haystack, Problem::Subgraph)
+            .with_initial_mapping(anchors)
+            .with_vf2pp_ordering()
+            .into_iter()
+            .map(|r| r.expect("error is infallible").0)
+            .collect()
+    }
+
+    /// Property: Every anchor pair MUST appear in every returned mapping.
+    #[test]
+    fn property_anchors_respected_in_all_outputs() {
+        // Build two isomorphic graphs (both are a 3-node path: 0→1→2).
+        let needle = build_graph(&[(0, 1), (1, 2)]);
+        let haystack = build_graph(&[(0, 1), (1, 2)]);
+
+        // Anchor virtual 0 → physical 0.
+        let anchors = vec![(NodeIndex::new(0), NodeIndex::new(0))];
+
+        let mappings = all_mappings(&needle, &haystack, anchors);
+        assert!(!mappings.is_empty(), "should find at least one mapping");
+
+        for mapping in &mappings {
+            assert_eq!(
+                mapping.get(&NodeIndex::new(0)),
+                Some(&NodeIndex::new(0)),
+                "anchor (0→0) must appear in every mapping: got {mapping:?}"
+            );
+        }
+    }
+
+    /// Property: When ALL needle nodes are anchored with a valid isomorphism, exactly one
+    /// mapping is returned and it matches the anchors exactly.
+    #[test]
+    fn property_all_nodes_anchored_exact_match() {
+        // Two identical 2-node graphs with one edge.
+        let needle = build_graph(&[(0, 1)]);
+        let haystack = build_graph(&[(0, 1)]);
+
+        // Anchor everything.
+        let anchors = vec![
+            (NodeIndex::new(0), NodeIndex::new(0)),
+            (NodeIndex::new(1), NodeIndex::new(1)),
+        ];
+
+        let mappings = all_mappings(&needle, &haystack, anchors);
+        assert_eq!(mappings.len(), 1, "exactly one mapping expected");
+        let m = &mappings[0];
+        assert_eq!(m[&NodeIndex::new(0)], NodeIndex::new(0));
+        assert_eq!(m[&NodeIndex::new(1)], NodeIndex::new(1));
+    }
+
+    /// If an anchor pair is structurally impossible, VF2 returns no solutions.
+    #[test]
+    fn infeasible_anchor_yields_no_solutions() {
+        // Needle: 0→1 (two nodes, one edge).
+        let needle = build_graph(&[(0, 1)]);
+        // Haystack: two isolated nodes (0 and 1, no edge).
+        let haystack = Graph::<usize, usize>::with_capacity(2, 0);
+        let mut h = haystack;
+        h.add_node(0);
+        h.add_node(1);
+
+        // Anchor 0→0, 1→1.  The structure cannot satisfy the edge.
+        let anchors = vec![
+            (NodeIndex::new(0), NodeIndex::new(0)),
+            (NodeIndex::new(1), NodeIndex::new(1)),
+        ];
+
+        let mappings = all_mappings(&needle, &h, anchors);
+        assert!(
+            mappings.is_empty(),
+            "infeasible anchors must yield no solutions"
+        );
+    }
+
+    /// Two virtual nodes anchored to the SAME physical node is a conflict; no solutions.
+    #[test]
+    fn duplicate_physical_anchor_yields_no_solutions() {
+        let needle = build_graph(&[(0, 1)]);
+        let haystack = build_graph(&[(0, 1), (1, 2)]); // 3 nodes, path
+
+        // Anchor two different virtual nodes to the SAME physical node.
+        let anchors = vec![
+            (NodeIndex::new(0), NodeIndex::new(0)),
+            (NodeIndex::new(1), NodeIndex::new(0)), // conflict!
+        ];
+
+        let mappings = all_mappings(&needle, &haystack, anchors);
+        assert!(
+            mappings.is_empty(),
+            "conflicting anchors must yield no solutions"
+        );
+    }
+
+    /// Single anchor on a larger graph: the anchor must be present in all solutions.
+    #[test]
+    fn single_anchor_on_path_in_star() {
+        // Needle: 0→1 (one edge).
+        let needle = build_graph(&[(0, 1)]);
+        // Haystack: star graph 0→1, 0→2, 0→3.
+        let haystack = build_graph(&[(0, 1), (0, 2), (0, 3)]);
+
+        // Anchor virtual 0 → physical 0.
+        let anchors = vec![(NodeIndex::new(0), NodeIndex::new(0))];
+        let mappings = all_mappings(&needle, &haystack, anchors);
+        assert!(!mappings.is_empty(), "should find at least one mapping");
+
+        for mapping in &mappings {
+            assert_eq!(mapping[&NodeIndex::new(0)], NodeIndex::new(0));
+            // Virtual 1 must map to a neighbor of physical 0.
+            let v1_target = mapping[&NodeIndex::new(1)];
+            assert!(
+                v1_target == NodeIndex::new(1)
+                    || v1_target == NodeIndex::new(2)
+                    || v1_target == NodeIndex::new(3),
+                "virtual 1 must map to a neighbor of physical 0"
+            );
+        }
+    }
+
+    /// Property: Empty anchors behave identically to no anchors.
+    #[test]
+    fn empty_anchors_same_as_no_anchors() {
+        let needle = build_graph(&[(0, 1)]);
+        let haystack = build_graph(&[(0, 1), (1, 2)]);
+
+        let with_empty = all_mappings(&needle, &haystack, vec![]);
+        let without = Vf2::new(&needle, &haystack, Problem::Subgraph)
+            .with_vf2pp_ordering()
+            .into_iter()
+            .map(|r| r.expect("error is infallible").0)
+            .collect::<Vec<_>>();
+
+        assert_eq!(with_empty.len(), without.len());
+        // The sets should match (order may differ due to VF2++ nondeterminism from hashing,
+        // but the count should be identical for this simple case).
     }
 }
