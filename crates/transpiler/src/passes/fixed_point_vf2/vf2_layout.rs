@@ -214,7 +214,7 @@ impl VF2PassReturn {
 
 /// Build an average error map for a given target.
 /// Each node has its own error rate by averaging over possible single-qubit gates
-/// Each edge has the same by averaging over possible two-qubit gates 
+/// Each edge has the same by averaging over possible two-qubit gates
 ///
 /// Returns `None` if there is a global 2q operation to avoid attempting to construct a meaningless
 /// all-to-all connectivity graph.
@@ -818,7 +818,8 @@ pub fn vf2_layout_pass_average(
     if !strict_direction {
         loosen_directionality(&mut coupling_graph);
     }
-    let best_score = if config.score_initial_layout { // Not run from VF2Layout
+    let best_score = if config.score_initial_layout {
+        // Not run from VF2Layout
         score_identity_layout(&interactions, &coupling_graph, vf2::Scorer(score))
     } else {
         None
@@ -996,9 +997,7 @@ pub fn vf2_layout_pass_exact(
         for (&v_idx, &p_idx) in anchors {
             let virt = VirtualQubit(v_idx);
             let phys = PhysicalQubit(p_idx);
-            if !interactions.nodes.contains(&virt)
-                && !interactions.uncoupled.contains_key(&virt)
-            {
+            if !interactions.nodes.contains(&virt) && !interactions.uncoupled.contains_key(&virt) {
                 mapping.insert(virt, phys);
             }
         }
