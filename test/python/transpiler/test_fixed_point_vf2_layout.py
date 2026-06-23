@@ -39,6 +39,9 @@ from qiskit.circuit.library import GraphStateGate, CXGate, XGate, HGate
 from qiskit.transpiler import PassManager, AnalysisPass
 from qiskit.transpiler.target import InstructionProperties
 from qiskit.transpiler.preset_passmanagers.common import generate_embed_passmanager
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from test import QiskitTestCase, combine  # pylint: disable=wrong-import-order
 
 from ..legacy_cmaps import TENERIFE_CMAP, RUESCHLIKON_CMAP, MANHATTAN_CMAP, YORKTOWN_CMAP
@@ -851,7 +854,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc.cx(0, 1)
         # Anchor virtual 0 → physical 1, virtual 1 → physical 2.
         anchors = {0: 1, 1: 2}
-        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed, anchors=anchors)
+        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         vf2_pass(qc)
         self.assertEqual(
             vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
@@ -867,9 +871,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc = QuantumCircuit(2)
         qc.cx(0, 1)  # 0→1 direction
         anchors = {0: 1, 1: 2}  # Must follow direction
-        vf2_pass = FixedPointVF2Layout(
-            cmap, strict_direction=True, seed=self.seed, anchors=anchors, max_trials=1
-        )
+        vf2_pass = FixedPointVF2Layout(cmap, strict_direction=True, seed=self.seed, max_trials=1)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         dag = circuit_to_dag(qc)
         vf2_pass.run(dag)
         self.assertEqual(
@@ -887,7 +890,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc.cx(0, 1)
         # Anchor virtual 0 → physical 0, virtual 1 → physical 0 (conflict!).
         anchors = {0: 0, 1: 0}
-        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         dag = circuit_to_dag(qc)
         with self.assertRaises(ValueError):
             vf2_pass.run(dag)
@@ -899,7 +903,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc.cx(0, 1)
         # Virtual qubit 5 doesn't exist (circuit has only 0, 1).
         anchors = {5: 0}
-        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         dag = circuit_to_dag(qc)
         with self.assertRaises(ValueError):
             vf2_pass.run(dag)
@@ -911,8 +916,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc.cx(0, 1)
 
         dag = circuit_to_dag(qc)
-        pass_empty = FixedPointVF2Layout(cmap, seed=self.seed, anchors={}, max_trials=1)
-        pass_none = FixedPointVF2Layout(cmap, seed=self.seed, anchors=None, max_trials=1)
+        pass_empty = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
+        pass_none = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
         pass_empty.run(dag)
         dag2 = circuit_to_dag(qc)
         pass_none.run(dag2)
@@ -929,7 +934,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc.cx(0, 1)
         # Physical qubit 99 doesn't exist.
         anchors = {0: 99}
-        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, anchors=anchors, max_trials=1)
+        vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         dag = circuit_to_dag(qc)
         with self.assertRaises(ValueError):
             vf2_pass.run(dag)
@@ -940,7 +946,7 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         qc = QuantumCircuit(2)
         qc.cx(0, 1)
         vf2_pass = FixedPointVF2Layout(cmap, seed=self.seed, max_trials=1)
-        vf2_pass.property_set["fixed_point_anchors"] = {0: 1, 1: 2}
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = {0: 1, 1: 2}
         dag = circuit_to_dag(qc)
         vf2_pass.run(dag)
         self.assertEqual(
@@ -972,7 +978,8 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         # Anchor the idle qubit 2 to physical qubit 0 (the "best" qubit if errors
         # are low, but it must stay at 0 because of the anchor).
         anchors = {2: 0}
-        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed, anchors=anchors, max_trials=1)
+        vf2_pass = FixedPointVF2Layout(target=target, seed=self.seed, max_trials=1)
+        vf2_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         vf2_pass(qc)
         self.assertEqual(
             vf2_pass.property_set["FixedPointVF2Layout_stop_reason"],
@@ -980,8 +987,9 @@ class TestFixedPointVF2LayoutAnchors(QiskitTestCase):
         )
         layout = vf2_pass.property_set["layout"]
         # The idle qubit 2 must be at physical 0 as anchored.
-        self.assertEqual(layout[qc.qubits[2]], 0,
-                         "idle anchored qubit must not be reassigned by map_free_qubits")
+        self.assertEqual(
+            layout[qc.qubits[2]], 0, "idle anchored qubit must not be reassigned by map_free_qubits"
+        )
 
 
 if __name__ == "__main__":

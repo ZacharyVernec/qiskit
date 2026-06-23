@@ -21,6 +21,9 @@ from enum import Enum
 from qiskit.transpiler.layout import Layout
 from qiskit.transpiler.basepasses import AnalysisPass
 from qiskit.transpiler.exceptions import TranspilerError
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from qiskit._accelerate.fixed_point_vf2 import (
     vf2_layout_pass_average,
     vf2_layout_pass_exact,
@@ -94,7 +97,6 @@ class FixedPointVF2PostLayout(AnalysisPass):
         time_limit=None,
         strict_direction=True,
         max_trials=0,
-        anchors=None,
     ):
         """Initialize a ``FixedPointVF2PostLayout`` pass instance
 
@@ -116,13 +118,6 @@ class FixedPointVF2PostLayout(AnalysisPass):
                 the target set of instructions.
             max_trials (int): The maximum number of trials to run VF2 to find
                 a layout. A value of ``0`` (the default) means 'unlimited'.
-            anchors (dict[int, int] | None): A dictionary mapping qubit indices to physical
-                qubit indices.  Each pair is a hard constraint: the specified qubit MUST stay
-                mapped to the specified physical qubit.  If ``None``, anchors are read from
-                ``property_set["fixed_point_anchors"]``.  Unlike :class:`~.FixedPointVF2Layout`,
-                these anchors are **physical→physical** (identity constraints) because the
-                circuit has already been laid out — the keys are circuit qubits which are
-                already physical after :class:`~.ApplyLayout`.
 
         Raises:
             TypeError: At runtime, if ``target`` isn't provided.
@@ -135,20 +130,17 @@ class FixedPointVF2PostLayout(AnalysisPass):
         self.seed = seed
         self.strict_direction = strict_direction
         self.avg_error_map = None
-        self.anchors = anchors
 
     def run(self, dag):
         """run the layout method"""
         if self.target is None:
             raise TranspilerError("A target must be specified")
         self.avg_error_map = self.property_set["vf2_avg_error_map"]
-        # Resolve anchors: constructor parameter takes precedence over property set.
+        # Read anchors from property set (validated by FixedPointConstraintValidation).
         # In PostLayout, anchors are physical→physical identity constraints because the circuit
         # has already been laid out.  The keys are circuit qubit indices (which ARE physical
         # after ApplyLayout) and the values are the physical qubits they must stay on.
-        anchors = self.anchors
-        if anchors is None:
-            anchors = self.property_set.get("fixed_point_anchors", None)
+        anchors = self.property_set.get(FIXED_POINT_METADATA_ANCHORS, None)
         if anchors is not None:
             anchors = {int(k): int(v) for k, v in anchors.items()}
         config = VF2PassConfiguration.from_legacy_api(

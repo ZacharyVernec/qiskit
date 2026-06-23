@@ -27,9 +27,10 @@ from qiskit.transpiler.passes import SabreSwap
 from qiskit.transpiler.passes import FixedPointSabreSwap
 from qiskit.transpiler.passes import Error
 from qiskit.transpiler.passes import SetLayout
-from qiskit.transpiler.passes import VF2Layout
+from qiskit.transpiler.passes import VF2Layout, FixedPointVF2Layout
 from qiskit.transpiler.passes import SabreLayout
 from qiskit.transpiler.passes import FixedPointSabreLayout
+from qiskit.transpiler.passes import FixedPointConstraintValidation
 from qiskit.transpiler.passes import DenseLayout
 from qiskit.transpiler.passes import TrivialLayout
 from qiskit.transpiler.passes import CheckMap
@@ -1099,6 +1100,10 @@ class FixedPointSabreLayoutPassManager(PassManagerStagePlugin):
 
         layout = PassManager()
         layout.append(_given_layout)
+
+        # Validate fixed-point constraints before any layout attempt.
+        layout.append(FixedPointConstraintValidation(target=pass_manager_config.target))
+
         if coupling_map is None:
             layout_pass = None
         elif optimization_level == 0:

@@ -33,12 +33,17 @@ from qiskit.transpiler import (
 from qiskit.transpiler.passes import (
     FixedPointSabreLayout,
     FixedPointSabreSwap,
+    FixedPointConstraintValidation,
     DenseLayout,
     Unroll3qOrMore,
     BasicSwap,
     SabrePreLayout,
 )
 from qiskit.transpiler.exceptions import TranspilerError
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_LOGICAL_PARTITIONS,
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.compiler.transpiler import transpile
 from qiskit.providers.fake_provider import GenericBackendV2
@@ -718,8 +723,8 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         pass_ = FixedPointSabreLayout(
             distributed_target, seed=0, swap_trials=4, layout_trials=4, skip_routing=True
         )
-        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
-        pass_.property_set["fixed_point_anchors"] = {}
+        pass_.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = {}
         pass_(qc)
 
         layout = pass_.property_set["layout"]
@@ -924,6 +929,230 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         self.assertIsNotNone(indices)
 
 
+class TestFixedPointConstraintValidation(QiskitTestCase):
+    """Tests for the FixedPointConstraintValidation analysis pass."""
+
+    def setUp(self):
+        super().setUp()
+        self.coupling = CouplingMap.from_line(8)
+        self.base_target = Target.from_configuration(
+            basis_gates=["u", "cx"],
+            coupling_map=self.coupling,
+        )
+
+    def _make_distributed_target(self, qpu_to_qubits):
+        """Make a DistributedTarget with given QPU mapping."""
+        comm_ancillas = {}
+        comm_edges = []
+        if len(qpu_to_qubits) > 1:
+            # Multi-QPU targets require communication ancillas.
+            # For a line coupling map, use adjacent boundary qubits.
+            qpu_names = sorted(qpu_to_qubits.keys())
+            for i in range(len(qpu_names) - 1):
+                q_a = max(qpu_to_qubits[qpu_names[i]])
+                q_b = min(qpu_to_qubits[qpu_names[i + 1]])
+                comm_ancillas.setdefault(qpu_names[i], []).append(q_a)
+                comm_ancillas.setdefault(qpu_names[i + 1], []).append(q_b)
+                comm_edges.append((q_a, q_b))
+            # Fill remaining QPUs with their first qubit
+            for name in qpu_names:
+                if name not in comm_ancillas:
+                    comm_ancillas[name] = [min(qpu_to_qubits[name])]
+        return DistributedTarget(
+            self.base_target,
+            qpu_to_qubits,
+            comm_ancillas=comm_ancillas,
+            comm_ancilla_edges=comm_edges,
+        )
+
+    def _run_validation(self, distributed_target, qc):
+        """Run the validation pass on a circuit and return the pass."""
+        dag = circuit_to_dag(qc)
+        pass_ = FixedPointConstraintValidation(target=distributed_target)
+        pass_.run(dag)
+        return pass_
+
+    # ------------------------------------------------------------------
+    #  No-constraints / valid-constraints cases
+    # ------------------------------------------------------------------
+
+    def test_no_constraints_is_noop(self):
+        """No metadata → pass is a no-op, writes nothing to property_set."""
+        distributed_target = self._make_distributed_target({"qpu_0": {0, 1, 2, 3}})
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+
+        pass_ = self._run_validation(distributed_target, qc)
+        self.assertNotIn(FIXED_POINT_METADATA_LOGICAL_PARTITIONS, pass_.property_set)
+        self.assertNotIn(FIXED_POINT_METADATA_ANCHORS, pass_.property_set)
+
+    def test_valid_constraints_single_qpu(self):
+        """Valid constraints for a single QPU are written to property_set."""
+        distributed_target = self._make_distributed_target({"qpu_0": {0, 1, 2, 3}})
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        pass_ = self._run_validation(distributed_target, qc)
+        self.assertIn(FIXED_POINT_METADATA_LOGICAL_PARTITIONS, pass_.property_set)
+        self.assertIn(FIXED_POINT_METADATA_ANCHORS, pass_.property_set)
+        partitions = pass_.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS]
+        self.assertEqual(set(partitions["qpu_0"]), set(qc.qubits))
+
+    def test_valid_constraints_two_qpus(self):
+        """Valid constraints for two QPUs are written to property_set."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}}
+        )
+        qc = QuantumCircuit(6)
+        qc.cx(0, 1)
+        qc.cx(2, 3)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits[:3]),
+            "qpu_1": list(qc.qubits[3:]),
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        pass_ = self._run_validation(distributed_target, qc)
+        partitions = pass_.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS]
+        self.assertEqual(len(partitions["qpu_0"]), 3)
+        self.assertEqual(len(partitions["qpu_1"]), 3)
+
+    def test_valid_with_anchors(self):
+        """Valid constraints with anchors are written to property_set."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}}
+        )
+        qc = QuantumCircuit(6)
+        qc.cx(0, 1)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits[:3]),
+            "qpu_1": list(qc.qubits[3:]),
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {
+            "qpu_0": {qc.qubits[0]: 0},
+            "qpu_1": {qc.qubits[3]: 4},
+        }
+
+        pass_ = self._run_validation(distributed_target, qc)
+        anchors = pass_.property_set[FIXED_POINT_METADATA_ANCHORS]
+        self.assertIn("qpu_0", anchors)
+        self.assertIn("qpu_1", anchors)
+
+    # ------------------------------------------------------------------
+    #  Error cases: wrong target
+    # ------------------------------------------------------------------
+
+    def test_constraints_without_distributed_target_raises(self):
+        """Constraints in metadata but not DistributedTarget → error."""
+        qc = QuantumCircuit(4)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(self.base_target, qc)
+
+    # ------------------------------------------------------------------
+    #  Error cases: invalid partitions
+    # ------------------------------------------------------------------
+
+    def test_overlapping_logical_partitions_raises(self):
+        """Overlapping logical partitions → TranspilerError."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}}
+        )
+        qc = QuantumCircuit(4)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits),
+            "qpu_1": [qc.qubits[0]],  # overlaps with qpu_0
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+    def test_capacity_violation_raises(self):
+        """|R_i| > |Q_i| → TranspilerError."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1}}
+        )  # only 2 physical qubits
+        qc = QuantumCircuit(4)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits),  # 4 logical qubits > 2 physical
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+    def test_missing_dag_qubit_raises(self):
+        """Logical qubit not in DAG → TranspilerError."""
+        distributed_target = self._make_distributed_target({"qpu_0": {0, 1, 2, 3}})
+        qc = QuantumCircuit(3)
+        # Create a qubit that's not in the circuit
+        extra_qr = QuantumRegister(1, "extra")
+        extra_qubit = extra_qr[0]
+
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits) + [extra_qubit],
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+    def test_unknown_qpu_name_raises(self):
+        """QPU name not in DistributedTarget → TranspilerError."""
+        distributed_target = self._make_distributed_target({"qpu_0": {0, 1, 2, 3}})
+        qc = QuantumCircuit(4)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_1": list(qc.qubits),  # qpu_1 doesn't exist
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {}
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+    # ------------------------------------------------------------------
+    #  Error cases: invalid anchors
+    # ------------------------------------------------------------------
+
+    def test_anchor_outside_logical_partition_raises(self):
+        """Anchor logical qubit not in R_i → TranspilerError."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}}
+        )
+        qc = QuantumCircuit(6)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits[:3]),
+            "qpu_1": list(qc.qubits[3:]),
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {
+            "qpu_0": {qc.qubits[3]: 0},  # qc.qubits[3] is in qpu_1, not qpu_0
+        }
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+    def test_anchor_outside_physical_qpu_raises(self):
+        """Anchor physical qubit not in Q_i → TranspilerError."""
+        distributed_target = self._make_distributed_target(
+            {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}}
+        )
+        qc = QuantumCircuit(6)
+        qc.metadata[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {
+            "qpu_0": list(qc.qubits[:3]),
+            "qpu_1": list(qc.qubits[3:]),
+        }
+        qc.metadata[FIXED_POINT_METADATA_ANCHORS] = {
+            "qpu_0": {qc.qubits[0]: 4},  # 4 is in qpu_1, not qpu_0
+        }
+
+        with self.assertRaises(TranspilerError):
+            self._run_validation(distributed_target, qc)
+
+
 class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
     """Tests for FixedPointSabreSwap with a DistributedTarget.
 
@@ -984,8 +1213,8 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         # Fixed-point with trivial monolithic constraints.
         fp_dag = circuit_to_dag(qc)
         fp_pass = FixedPointSabreSwap(distributed_target, "decay", seed=0, trials=4)
-        fp_pass.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
-        fp_pass.property_set["fixed_point_anchors"] = {}
+        fp_pass.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        fp_pass.property_set[FIXED_POINT_METADATA_ANCHORS] = {}
         fp_routed_dag = fp_pass.run(fp_dag)
 
         # Both should produce the same number of swaps.
@@ -1013,8 +1242,8 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
 
         dag = circuit_to_dag(qc)
         pass_ = FixedPointSabreSwap(distributed_target, "basic", seed=0, trials=4)
-        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
-        pass_.property_set["fixed_point_anchors"] = {}
+        pass_.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = {}
         result = pass_.run(dag)
 
         self.assertIsNotNone(result)
@@ -1052,8 +1281,8 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
 
         dag = circuit_to_dag(qc)
         pass_ = FixedPointSabreSwap(distributed_target, "basic", seed=0, trials=4)
-        pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
-        pass_.property_set["fixed_point_anchors"] = {}
+        pass_.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = {"qpu_0": list(qc.qubits)}
+        pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = {}
         with self.assertRaises(TranspilerError):
             pass_.run(dag)
 

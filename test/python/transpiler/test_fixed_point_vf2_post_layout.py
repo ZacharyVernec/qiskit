@@ -24,6 +24,9 @@ from qiskit.transpiler.passes.layout.fixed_point_vf2_post_layout import (
     FixedPointVF2PostLayout,
     FixedPointVF2PostLayoutStopReason,
 )
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from qiskit.converters import circuit_to_dag
 from qiskit.providers.fake_provider import GenericBackendV2
 from qiskit.compiler.transpiler import transpile
@@ -647,8 +650,8 @@ class TestFixedPointVF2PostLayoutAnchors(QiskitTestCase):
             target=backend.target,
             seed=self.seed,
             strict_direction=False,
-            anchors=anchors,
         )
+        pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors
         pass_.run(dag)
         # Anchors are identity constraints; the identity layout trivially satisfies them.
         # The pass may find the identity layout already optimal (NO_BETTER_SOLUTION_FOUND)
@@ -681,7 +684,7 @@ class TestFixedPointVF2PostLayoutAnchors(QiskitTestCase):
         # Set anchors via property set (identity: keep qubits where they are).
         p0 = tqc._layout.initial_layout[qc.qubits[0]]
         p1 = tqc._layout.initial_layout[qc.qubits[1]]
-        pass_.property_set["fixed_point_anchors"] = {0: p0, 1: p1}
+        pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = {0: p0, 1: p1}
         pass_.run(dag)
         self.assertIn(
             pass_.property_set["FixedPointVF2PostLayout_stop_reason"],

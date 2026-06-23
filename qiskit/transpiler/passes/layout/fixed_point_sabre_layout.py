@@ -33,6 +33,10 @@ from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.target import Target, _FakeTarget
 from qiskit._accelerate.fixed_point_sabre import sabre_layout_and_routing, Heuristic, SetScaling
 from qiskit.transpiler.distributed_target import DistributedTarget
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_LOGICAL_PARTITIONS,
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from qiskit.utils import default_num_processes
 
 logger = logging.getLogger(__name__)
@@ -194,6 +198,11 @@ class FixedPointSabreLayout(TransformationPass):
     def _build_fixed_point_constraints(self, dag):
         """Extract fixed-point SABRE constraints from DistributedTarget + property set.
 
+        Constraints are expected to have been validated by
+        :class:`.FixedPointConstraintValidation` and written to the property
+        set under ``"fixed_point_logical_partitions"`` and
+        ``"fixed_point_anchors"``.
+
         Returns the five constraint lists expected by the Rust
         ``sabre_layout_and_routing`` function, or empty lists for
         SABRE compatibility mode (no ``DistributedTarget``).
@@ -203,8 +212,8 @@ class FixedPointSabreLayout(TransformationPass):
             return [], [], [], [], []
 
         dt = target
-        logical_partitions_raw = self.property_set.get("fixed_point_logical_partitions", {})
-        anchors_raw = self.property_set.get("fixed_point_anchors", {})
+        logical_partitions_raw = self.property_set.get(FIXED_POINT_METADATA_LOGICAL_PARTITIONS, {})
+        anchors_raw = self.property_set.get(FIXED_POINT_METADATA_ANCHORS, {})
 
         dag_index = {qubit: i for i, qubit in enumerate(dag.qubits)}
 

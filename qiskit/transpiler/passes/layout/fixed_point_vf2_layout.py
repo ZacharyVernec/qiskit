@@ -22,6 +22,9 @@ from qiskit.transpiler.layout import Layout
 from qiskit.transpiler.basepasses import AnalysisPass
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.target import Target
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_ANCHORS,
+)
 from qiskit._accelerate.fixed_point_vf2 import (
     vf2_layout_pass_average,
     MultiQEncountered,
@@ -83,7 +86,6 @@ class FixedPointVF2Layout(AnalysisPass):
         time_limit=None,
         max_trials=None,
         target=None,
-        anchors=None,
     ):
         """Initialize a ``FixedPointVF2Layout`` pass instance
 
@@ -116,11 +118,6 @@ class FixedPointVF2Layout(AnalysisPass):
                 of ``target`` models an ideal backend without any constraints then the value of
                 ``coupling_map``
                 will be used.
-            anchors (dict[int, int] | None): A dictionary mapping virtual qubit indices to physical
-                qubit indices.  Each pair is a hard constraint: the specified virtual qubit MUST be
-                mapped to the specified physical qubit.  If ``None``, anchors are read from
-                ``property_set["fixed_point_anchors"]``.  These anchors are **virtual→physical**
-                because the circuit has not yet been laid out.
 
         Raises:
             TypeError: At runtime, if neither ``coupling_map`` or ``target`` are provided.
@@ -134,7 +131,6 @@ class FixedPointVF2Layout(AnalysisPass):
         self.time_limit = time_limit
         self.max_trials = max_trials
         self.avg_error_map = None
-        self.anchors = anchors
 
     def run(self, dag):
         """run the layout method"""
@@ -154,10 +150,8 @@ class FixedPointVF2Layout(AnalysisPass):
             else:
                 target = self.target
         self.avg_error_map = self.property_set["vf2_avg_error_map"]
-        # Resolve anchors: constructor parameter takes precedence over property set.
-        anchors = self.anchors
-        if anchors is None:
-            anchors = self.property_set.get("fixed_point_anchors", None)
+        # Read anchors from property set (validated by FixedPointConstraintValidation).
+        anchors = self.property_set.get(FIXED_POINT_METADATA_ANCHORS, None)
         if anchors is not None:
             # Convert to dict[int, int] if needed (e.g. from Layout or other mapping types).
             anchors = {int(k): int(v) for k, v in anchors.items()}

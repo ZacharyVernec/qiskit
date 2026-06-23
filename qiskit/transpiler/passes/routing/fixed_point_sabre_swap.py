@@ -29,6 +29,10 @@ from qiskit.utils import default_num_processes
 from qiskit._accelerate.fixed_point_sabre import sabre_routing, Heuristic, SetScaling, RoutingTarget
 from qiskit._accelerate.nlayout import NLayout
 from qiskit.transpiler.distributed_target import DistributedTarget
+from qiskit.transpiler.passes.layout.fixed_point_constraint_validation import (
+    FIXED_POINT_METADATA_LOGICAL_PARTITIONS,
+    FIXED_POINT_METADATA_ANCHORS,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -178,6 +182,11 @@ class FixedPointSabreSwap(TransformationPass):
     def _build_fixed_point_constraints(self, dag):
         """Extract fixed-point SABRE constraints from DistributedTarget + property set.
 
+        Constraints are expected to have been validated by
+        :class:`.FixedPointConstraintValidation` and written to the property
+        set under ``"fixed_point_logical_partitions"`` and
+        ``"fixed_point_anchors"``.
+
         At swap time the DAG is already physical, so the logical qubit indices
         in ``fixed_point_logical_partitions`` are remapped to their current
         physical positions via the ``layout`` property set entry.
@@ -190,8 +199,8 @@ class FixedPointSabreSwap(TransformationPass):
             return [], [], [], [], []
 
         dt = target
-        logical_partitions_raw = self.property_set.get("fixed_point_logical_partitions", {})
-        anchors_raw = self.property_set.get("fixed_point_anchors", {})
+        logical_partitions_raw = self.property_set.get(FIXED_POINT_METADATA_LOGICAL_PARTITIONS, {})
+        anchors_raw = self.property_set.get(FIXED_POINT_METADATA_ANCHORS, {})
 
         # Read the current layout to remap logical → physical.
         current_layout = self.property_set.get("layout")
