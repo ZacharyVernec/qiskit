@@ -26,9 +26,13 @@ from qiskit.transpiler import (
     CouplingMap,
     AnalysisPass,
     PassManager,
+    PassManagerConfig,
     Target,
     Layout,
     DistributedTarget,
+)
+from qiskit.transpiler.preset_passmanagers.plugin import (
+    PassManagerStagePluginManager,
 )
 from qiskit.transpiler.passes import (
     FixedPointSabreLayout,
@@ -1285,6 +1289,147 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         pass_.property_set[FIXED_POINT_METADATA_ANCHORS] = {}
         with self.assertRaises(TranspilerError):
             pass_.run(dag)
+
+
+class TestFixedPointDefaultLayoutPassManagerCompatibility(QiskitTestCase):
+    """Test that FixedPointDefaultLayoutPassManager produces the same results as
+    DefaultLayoutPassManager when given a DistributedTarget with a single QPU
+    and no anchors (Section 7 compatibility)."""
+
+    def setUp(self):
+        super().setUp()
+        self.coupling = CouplingMap.from_line(8)
+        self.base_target = Target.from_configuration(
+            basis_gates=["u", "cx"],
+            coupling_map=self.coupling,
+        )
+        # DistributedTarget with a single QPU covering all qubits, no comm ancillas.
+        self.distributed_target = DistributedTarget(
+            self.base_target,
+            {"qpu_0": set(range(8))},
+        )
+        self.plugin_manager = PassManagerStagePluginManager()
+
+    def _run_layout_pm(self, plugin_name, target, seed, optimization_level):
+        """Run a layout pass manager plugin and return the property_set layout."""
+        pm_config = PassManagerConfig(
+            coupling_map=self.coupling,
+            basis_gates=["u", "cx"],
+            seed_transpiler=seed,
+            layout_method=plugin_name,
+            target=target,
+        )
+        pm = self.plugin_manager.get_passmanager_stage(
+            "layout", plugin_name, pm_config, optimization_level=optimization_level
+        )
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        qc.cx(4, 0)
+        pm.run(qc)
+        return pm.property_set["layout"]
+
+    def test_level_2_same_layout_as_default(self):
+        """Optimization level 2: FixedPointDefaultLayoutPassManager with trivial
+        DistributedTarget should produce the same initial layout as
+        DefaultLayoutPassManager."""
+        seed = 42
+        default_layout = self._run_layout_pm(
+            "default", self.base_target, seed, optimization_level=2
+        )
+        fp_layout = self._run_layout_pm(
+            "fixed_point_default", self.distributed_target, seed, optimization_level=2
+        )
+        # Both should produce a valid layout.
+        self.assertIsNotNone(default_layout)
+        self.assertIsNotNone(fp_layout)
+        # With the same seed and no effective constraints, they should agree.
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        qc.cx(4, 0)
+        self.assertEqual(
+            [default_layout[q] for q in qc.qubits],
+            [fp_layout[q] for q in qc.qubits],
+            "FixedPointDefaultLayoutPassManager should match DefaultLayoutPassManager "
+            "with a trivial DistributedTarget at level 2",
+        )
+
+    def test_level_3_same_layout_as_default(self):
+        """Optimization level 3: FixedPointDefaultLayoutPassManager with trivial
+        DistributedTarget should produce the same initial layout as
+        DefaultLayoutPassManager."""
+        seed = 43
+        default_layout = self._run_layout_pm(
+            "default", self.base_target, seed, optimization_level=3
+        )
+        fp_layout = self._run_layout_pm(
+            "fixed_point_default", self.distributed_target, seed, optimization_level=3
+        )
+        self.assertIsNotNone(default_layout)
+        self.assertIsNotNone(fp_layout)
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        qc.cx(4, 0)
+        self.assertEqual(
+            [default_layout[q] for q in qc.qubits],
+            [fp_layout[q] for q in qc.qubits],
+            "FixedPointDefaultLayoutPassManager should match DefaultLayoutPassManager "
+            "with a trivial DistributedTarget at level 3",
+        )
+
+    def test_fixed_point_default_rejects_level_0(self):
+        """FixedPointDefaultLayoutPassManager should reject optimization level 0."""
+        pm_config = PassManagerConfig(
+            coupling_map=self.coupling,
+            basis_gates=["u", "cx"],
+            target=self.distributed_target,
+        )
+        with self.assertRaises(TranspilerError):
+            self.plugin_manager.get_passmanager_stage(
+                "layout", "fixed_point_default", pm_config, optimization_level=0
+            )
+
+    def test_fixed_point_default_rejects_level_1(self):
+        """FixedPointDefaultLayoutPassManager should reject optimization level 1."""
+        pm_config = PassManagerConfig(
+            coupling_map=self.coupling,
+            basis_gates=["u", "cx"],
+            target=self.distributed_target,
+        )
+        with self.assertRaises(TranspilerError):
+            self.plugin_manager.get_passmanager_stage(
+                "layout", "fixed_point_default", pm_config, optimization_level=1
+            )
+
+    def test_produces_final_layout_with_trivial_distributed_target(self):
+        """The FixedPointDefaultLayoutPassManager should produce a final_layout
+        when used with a trivial DistributedTarget."""
+        pm_config = PassManagerConfig(
+            coupling_map=self.coupling,
+            basis_gates=["u", "cx"],
+            seed_transpiler=42,
+            target=self.distributed_target,
+        )
+        pm = self.plugin_manager.get_passmanager_stage(
+            "layout", "fixed_point_default", pm_config, optimization_level=2
+        )
+        qc = QuantumCircuit(5)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+        qc.cx(2, 3)
+        qc.cx(3, 4)
+        qc.cx(4, 0)
+        pm.run(qc)
+        self.assertIsNotNone(pm.property_set.get("layout"))
+        self.assertIsNotNone(pm.property_set.get("final_layout"))
 
 
 if __name__ == "__main__":

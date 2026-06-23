@@ -1005,7 +1005,8 @@ class FixedPointDefaultLayoutPassManager(PassManagerStagePlugin):
                 seed=pass_manager_config.seed_transpiler,
                 swap_trials=trial_count,
                 layout_trials=trial_count,
-                skip_routing=pass_manager_config.routing_method not in (None, "default", "sabre", "fixed_point_sabre"),
+                skip_routing=pass_manager_config.routing_method
+                not in (None, "default", "sabre", "fixed_point_sabre"),
             )
 
             layout.append(
