@@ -55,10 +55,13 @@ class TestFixedPointConstraintValidation(QiskitTestCase):
         )
 
     @staticmethod
-    def _run(pass_, dag, **property_set_kwargs):
-        """Helper to run the validation pass with property-set inputs."""
-        for key, value in property_set_kwargs.items():
-            pass_.property_set[key] = value
+    def _run(pass_, dag, **metadata_kwargs):
+        """Helper to run the validation pass with DAG metadata inputs."""
+        if metadata_kwargs:
+            if dag.metadata is None:
+                dag.metadata = {}
+            for key, value in metadata_kwargs.items():
+                dag.metadata[key] = value
         pass_(dag)
         return pass_
 

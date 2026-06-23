@@ -169,6 +169,7 @@ class FixedPointConstraintValidation(AnalysisPass):
 
         if not logical_partitions:
             # No constraints — downstream passes operate in compatibility mode.
+            self.property_set["fixed_point_normalized"] = True
             return
 
         # --- Target must be a DistributedTarget when constraints are present ---
@@ -247,3 +248,4 @@ class FixedPointConstraintValidation(AnalysisPass):
         # using these same keys.
         self.property_set[FIXED_POINT_METADATA_LOGICAL_PARTITIONS] = logical_partitions
         self.property_set[FIXED_POINT_METADATA_ANCHORS] = anchors_raw
+        self.property_set["fixed_point_normalized"] = True
