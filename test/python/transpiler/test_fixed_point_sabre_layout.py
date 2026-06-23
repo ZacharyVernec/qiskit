@@ -647,7 +647,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
             coupling_map=self.coupling,
         )
 
-    def _make_dt(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
+    def _make_distributed_target(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
         """Make a DistributedTarget with given QPU mapping."""
         return DistributedTarget(
             self.base_target,
@@ -656,9 +656,9 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
             comm_ancilla_edges=comm_ancilla_edges or [],
         )
 
-    def _run_layout(self, dt, qc, **property_set_kwargs):
+    def _run_layout(self, distributed_target, qc, **property_set_kwargs):
         """Run FixedPointSabreLayout with property-set constraint data and return the pass."""
-        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4)
+        pass_ = FixedPointSabreLayout(distributed_target, seed=0, swap_trials=4, layout_trials=4)
         for key, value in property_set_kwargs.items():
             pass_.property_set[key] = value
         pass_(qc)
@@ -676,7 +676,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         SABRE passes are a strict superset of the original SABRE passes
         when no constraints are active.
         """
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(5)
         qc.cx(0, 1)
@@ -687,7 +687,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
 
         # Fixed-point with trivial monolithic constraints.
         fp_pass = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
             fixed_point_anchors={},
@@ -707,7 +707,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
 
     def test_trivial_monolithic_qpu_with_skip_routing(self):
         """Section 7 compatibility with skip_routing=True."""
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(5)
         qc.cx(0, 1)
@@ -715,7 +715,9 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(2, 3)
         qc.cx(3, 4)
 
-        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4, skip_routing=True)
+        pass_ = FixedPointSabreLayout(
+            distributed_target, seed=0, swap_trials=4, layout_trials=4, skip_routing=True
+        )
         pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
         pass_.property_set["fixed_point_anchors"] = {}
         pass_(qc)
@@ -727,7 +729,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
     def test_trivial_monolithic_qpu_preserves_gate_semantics(self):
         """Even with trivial constraints, the routed circuit should be logically
         equivalent (same number of non-swap gates) to the original."""
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(5)
         qc.cx(0, 1)
@@ -737,7 +739,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         original_ops = dict(qc.count_ops())
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
             fixed_point_anchors={},
@@ -755,7 +757,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
     def test_two_qpu_constraints_do_not_crash_layout(self):
         """Two QPUs with valid constraints. The pass should complete without error.
         (Full enforcement is not yet implemented; this is a smoke test.)"""
-        dt = self._make_dt(
+        distributed_target = self._make_distributed_target(
             {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
             comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
             comm_ancilla_edges=[(3, 4), (4, 3)],
@@ -768,7 +770,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(4, 5)
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={
                 "qpu_0": [qc.qubits[0], qc.qubits[1], qc.qubits[2]],
@@ -784,7 +786,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
     def test_two_qpu_with_anchors_do_not_crash_layout(self):
         """Two QPUs with anchors — the pass should complete without error.
         (Full enforcement is not yet implemented; this is a smoke test.)"""
-        dt = self._make_dt(
+        distributed_target = self._make_distributed_target(
             {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
             comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
             comm_ancilla_edges=[(3, 4), (4, 3)],
@@ -795,7 +797,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(2, 3)
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={
                 "qpu_0": [qc.qubits[0], qc.qubits[1]],
@@ -813,7 +815,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
     def test_two_qpu_cross_qpu_gates_do_not_crash(self):
         """Circuit with cross-QPU gates — the pass should complete without error.
         (Full enforcement is not yet implemented; this is a smoke test.)"""
-        dt = self._make_dt(
+        distributed_target = self._make_distributed_target(
             {"qpu_0": {0, 1, 2, 3}, "qpu_1": {4, 5, 6, 7}},
             comm_ancillas={"qpu_0": [3], "qpu_1": [4]},
             comm_ancilla_edges=[(3, 4), (4, 3)],
@@ -826,7 +828,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(1, 3)  # cross-QPU
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={
                 "qpu_0": [qc.qubits[0], qc.qubits[1]],
@@ -841,7 +843,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
     def test_single_qpu_distributed_target_no_constraints(self):
         """Single QPU DistributedTarget with no property-set constraints behaves like
         a standard Target (no logical partitions or anchors provided)."""
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(5)
         qc.cx(0, 1)
@@ -850,7 +852,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(3, 4)
 
         # No constraints on property set — should still work.
-        pass_ = FixedPointSabreLayout(dt, seed=0, swap_trials=4, layout_trials=4)
+        pass_ = FixedPointSabreLayout(distributed_target, seed=0, swap_trials=4, layout_trials=4)
         pass_(qc)
 
         layout = pass_.property_set["layout"]
@@ -859,7 +861,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
 
     def test_three_qpu_distributed_target_does_not_crash(self):
         """Three QPUs with varying sizes — the pass should complete without error."""
-        dt = DistributedTarget(
+        distributed_target = DistributedTarget(
             self.base_target,
             {"qpu_0": {0, 1}, "qpu_1": {2, 3, 4}, "qpu_2": {5, 6, 7}},
             comm_ancillas={"qpu_0": [1], "qpu_1": [2], "qpu_2": [7]},
@@ -872,7 +874,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(4, 5)
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={
                 "qpu_0": [qc.qubits[0], qc.qubits[1]],
@@ -887,7 +889,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
 
     def test_final_layout_produced_with_constraints(self):
         """The pass produces a final_layout property when constraints are provided."""
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(5)
         qc.cx(0, 1)
@@ -896,7 +898,7 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
         qc.cx(3, 4)
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
             fixed_point_anchors={},
@@ -906,14 +908,14 @@ class TestFixedPointSabreLayoutWithDistributedTarget(QiskitTestCase):
 
     def test_original_qubit_indices_produced_with_constraints(self):
         """The pass produces original_qubit_indices when constraints are provided."""
-        dt = self._make_dt({"qpu_0": set(range(8))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(8))})
 
         qc = QuantumCircuit(4)
         qc.cx(0, 1)
         qc.cx(1, 2)
 
         pass_ = self._run_layout(
-            dt,
+            distributed_target,
             qc,
             fixed_point_logical_partitions={"qpu_0": list(qc.qubits)},
             fixed_point_anchors={},
@@ -941,7 +943,7 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
             coupling_map=self.coupling,
         )
 
-    def _make_dt(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
+    def _make_distributed_target(self, qpu_to_qubits, comm_ancillas=None, comm_ancilla_edges=None):
         """Make a DistributedTarget with given QPU mapping."""
         return DistributedTarget(
             self.base_target,
@@ -965,7 +967,7 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         from qiskit.converters import circuit_to_dag
 
         num_qubits = 8
-        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(num_qubits))})
 
         qc = QuantumCircuit(num_qubits)
         for i in range(num_qubits - 1):
@@ -981,7 +983,7 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
 
         # Fixed-point with trivial monolithic constraints.
         fp_dag = circuit_to_dag(qc)
-        fp_pass = FixedPointSabreSwap(dt, "decay", seed=0, trials=4)
+        fp_pass = FixedPointSabreSwap(distributed_target, "decay", seed=0, trials=4)
         fp_pass.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
         fp_pass.property_set["fixed_point_anchors"] = {}
         fp_routed_dag = fp_pass.run(fp_dag)
@@ -1003,14 +1005,14 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         from qiskit.converters import circuit_to_dag
 
         num_qubits = 8
-        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(num_qubits))})
 
         qc = QuantumCircuit(num_qubits)
         for i in range(num_qubits - 1):
             qc.cx(i, i + 1)
 
         dag = circuit_to_dag(qc)
-        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        pass_ = FixedPointSabreSwap(distributed_target, "basic", seed=0, trials=4)
         pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
         pass_.property_set["fixed_point_anchors"] = {}
         result = pass_.run(dag)
@@ -1025,14 +1027,14 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         from qiskit.converters import circuit_to_dag
 
         num_qubits = 8
-        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(num_qubits))})
 
         qc = QuantumCircuit(num_qubits)
         for i in range(num_qubits - 1):
             qc.cx(i, i + 1)
 
         dag = circuit_to_dag(qc)
-        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        pass_ = FixedPointSabreSwap(distributed_target, "basic", seed=0, trials=4)
         result = pass_.run(dag)
         self.assertIsNotNone(result)
 
@@ -1041,7 +1043,7 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         from qiskit.converters import circuit_to_dag
 
         num_qubits = 8
-        dt = self._make_dt({"qpu_0": set(range(num_qubits))})
+        distributed_target = self._make_distributed_target({"qpu_0": set(range(num_qubits))})
 
         qc = QuantumCircuit(4)
         qc.cx(0, 1)
@@ -1049,7 +1051,7 @@ class TestFixedPointSabreSwapWithDistributedTarget(QiskitTestCase):
         qc.cx(2, 3)
 
         dag = circuit_to_dag(qc)
-        pass_ = FixedPointSabreSwap(dt, "basic", seed=0, trials=4)
+        pass_ = FixedPointSabreSwap(distributed_target, "basic", seed=0, trials=4)
         pass_.property_set["fixed_point_logical_partitions"] = {"qpu_0": list(qc.qubits)}
         pass_.property_set["fixed_point_anchors"] = {}
         with self.assertRaises(TranspilerError):
