@@ -941,6 +941,93 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
         return layout
 
 
+class FixedPointDefaultLayoutPassManager(PassManagerStagePlugin):
+    """Plugin class for fixed point layout similar to default layout stage."""
+
+    def pass_manager(self, pass_manager_config, optimization_level=None) -> PassManager:
+        _given_layout = SetLayout(pass_manager_config.initial_layout)
+
+        def _choose_layout_condition(property_set):
+            return not property_set["layout"]
+
+        def _layout_not_perfect(property_set):
+            """Return ``True`` if the first attempt at layout has been checked and found to be
+            imperfect.  In this case, perfection means "does not require any swap routing"."""
+            return property_set["is_swap_mapped"] is not None and not property_set["is_swap_mapped"]
+
+        def _vf2_match_not_found(property_set):
+            # If a layout hasn't been set by the time we run vf2 layout we need to
+            # run layout
+            if property_set["layout"] is None:
+                return True
+            # if VF2 layout stopped for any reason other than solution found we need
+            # to run layout since VF2 didn't converge.
+            return (
+                property_set["VF2Layout_stop_reason"] is not None
+                and property_set["VF2Layout_stop_reason"] is not VF2LayoutStopReason.SOLUTION_FOUND
+            )
+
+        def _swap_mapped(property_set):
+            return property_set["final_layout"] is None
+
+        if pass_manager_config.target is None:
+            coupling_map = pass_manager_config.coupling_map
+        else:
+            coupling_map = pass_manager_config.target
+
+        layout = PassManager()
+        layout.append(_given_layout)
+
+        # Validate fixed-point constraints before any layout attempt.
+        layout.append(FixedPointConstraintValidation(target=pass_manager_config.target))
+
+        if optimization_level in {2, 3}:
+
+            call_limit_layout_0 = (
+                (5_000_000, 10_000) if optimization_level == 2 else (30_000_000, 100_000)
+            )
+            choose_layout_0 = FixedPointVF2Layout(
+                coupling_map=pass_manager_config.coupling_map,
+                seed=-1,
+                call_limit=call_limit_layout_0,
+                target=pass_manager_config.target,
+            )
+            layout.append(
+                ConditionalController(choose_layout_0, condition=_choose_layout_condition)
+            )
+
+            trial_count = _get_trial_count(20)
+
+            max_iterations_layout_1 = 2 if optimization_level == 2 else 4
+            choose_layout_1 = FixedPointSabreLayout(
+                coupling_map,
+                max_iterations=max_iterations_layout_1,
+                seed=pass_manager_config.seed_transpiler,
+                swap_trials=trial_count,
+                layout_trials=trial_count,
+                skip_routing=pass_manager_config.routing_method not in (None, "default", "sabre", "fixed_point_sabre"),
+            )
+
+            layout.append(
+                ConditionalController(
+                    [
+                        BarrierBeforeFinalMeasurements(
+                            "qiskit.transpiler.internal.routing.protection.barrier"
+                        ),
+                        choose_layout_1,
+                    ],
+                    condition=_vf2_match_not_found,
+                )
+            )
+
+        else:
+            raise TranspilerError(f"Invalid optimization level: {optimization_level}")
+
+        embed = common.generate_embed_passmanager(coupling_map)
+        layout.append(ConditionalController(embed.to_flow_controller(), condition=_swap_mapped))
+        return layout
+
+
 class TrivialLayoutPassManager(PassManagerStagePlugin):
     """Plugin class for trivial layout stage."""
 

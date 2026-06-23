@@ -168,6 +168,7 @@ default = "qiskit.transpiler.preset_passmanagers.builtin_plugins:DefaultLayoutPa
 dense = "qiskit.transpiler.preset_passmanagers.builtin_plugins:DenseLayoutPassManager"
 sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:SabreLayoutPassManager"
 fixed_point_sabre = "qiskit.transpiler.preset_passmanagers.builtin_plugins:FixedPointSabreLayoutPassManager"
+fixed_point_default = "qiskit.transpiler.preset_passmanagers.builtin_plugins:FixedPointDefaultLayoutPassManager"
 trivial = "qiskit.transpiler.preset_passmanagers.builtin_plugins:TrivialLayoutPassManager"
 
 [project.entry-points."qiskit.transpiler.scheduling"]
